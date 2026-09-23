@@ -7,6 +7,7 @@ const teacherNav = [
   { href: "/dashboard/token", label: "Токен" },
   { href: "/dashboard/schedule", label: "Расписание" },
   { href: "/dashboard/ktp", label: "КТП" },          // ← новый пункт
+  { href: "/dashboard/homework", label: "Домашние задания" },
 
   { href: "/dashboard/extension", label: "Расширение" },
 ];
