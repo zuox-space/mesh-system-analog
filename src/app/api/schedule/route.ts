@@ -23,7 +23,7 @@ export async function GET(req: Request) {
 
   if (!user.profileId) {
     return NextResponse.json(
-      { detail: "Не известен profile_id. Перепривяжите токен через расширение." },
+      { detail: "Не известен profile_id" },
       { status: 400 }
     );
   }
@@ -38,48 +38,98 @@ export async function GET(req: Request) {
     searchParams.get("to") ||
     new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
 
-  const url = new URL(
+  const headers = {
+    authorization: `Bearer ${meshToken}`,
+    "profile-id": String(teacherId),
+    "x-mes-hostid": "9",
+    "x-mes-roleid": "9",
+    aid: "14",
+    accept: "*/*",
+  };
+
+  // ============ 1. Расписание ============
+  const scheduleUrl = new URL(
     "https://school.mos.ru/api/ej/plan/teacher/v1/schedule_items"
   );
-  url.searchParams.set("academic_year_id", "14");
-  url.searchParams.set("teacher_id", String(teacherId));
-  url.searchParams.set("from", dateFrom);
-  url.searchParams.set("to", dateTo);
-  url.searchParams.set("with_course_calendar_info", "true");
-  url.searchParams.set("with_group_class_subject_info", "true");
-  url.searchParams.set("with_lesson_info", "true");
-  url.searchParams.set("with_rooms_info", "true");
-  url.searchParams.set("page", "1");
-  url.searchParams.set("per_page", "400");
-  url.searchParams.set("original", "true");
+  scheduleUrl.searchParams.set("academic_year_id", "14");
+  scheduleUrl.searchParams.set("teacher_id", String(teacherId));
+  scheduleUrl.searchParams.set("from", dateFrom);
+  scheduleUrl.searchParams.set("to", dateTo);
+  scheduleUrl.searchParams.set("with_course_calendar_info", "true");
+  scheduleUrl.searchParams.set("with_group_class_subject_info", "true");
+  scheduleUrl.searchParams.set("with_lesson_info", "true");
+  scheduleUrl.searchParams.set("with_rooms_info", "true");
+  scheduleUrl.searchParams.set("page", "1");
+  scheduleUrl.searchParams.set("per_page", "4000");
+  scheduleUrl.searchParams.set("original", "true");
+
+  // ============ 2. Кабинеты ============
+  const roomsUrl =
+    "https://school.mos.ru/api/ej/core/teacher/v1/rooms";
 
   try {
-    const r = await fetch(url.toString(), {
-      headers: {
-        authorization: `Bearer ${meshToken}`,
-        "profile-id": String(teacherId),
-        "x-mes-hostid": "9",
-        "x-mes-roleid": "9",
-        "x-mes-subsystem": "teacherweb",
-        aid: "14",
-        accept: "*/*",
-      },
-    });
+    const [schRes, roomsRes] = await Promise.all([
+      fetch(scheduleUrl.toString(), {
+        headers: { ...headers, "x-mes-subsystem": "teacherweb" },
+        cache: "no-store",
+      }),
+      fetch(roomsUrl, {
+        headers: { ...headers, "x-mes-subsystem": "teacherweb" },
+        cache: "no-store",
+      }),
+    ]);
 
-    if (!r.ok) {
-      const text = await r.text();
+    if (!schRes.ok) {
+      const text = await schRes.text();
       return NextResponse.json(
-        {
-          detail: `Ошибка МЭШ: ${r.status}`,
-          raw: text.slice(0, 500),
-        },
-        { status: r.status }
+        { detail: `Ошибка МЭШ: ${schRes.status}`, raw: text.slice(0, 500) },
+        { status: schRes.status }
       );
     }
 
-    const data = await r.json();
-    return NextResponse.json(data);
+    const data = await schRes.json();
+
+    // Строим карту room_id → название
+    let roomsMap: Record<number, string> = {};
+    if (roomsRes.ok) {
+      try {
+        const roomsData = await roomsRes.json();
+        const roomsList = Array.isArray(roomsData)
+          ? roomsData
+          : roomsData.items || roomsData.data || [];
+
+        for (const r of roomsList) {
+          const id = Number(r.id);
+          if (!id) continue;
+          // Приоритет: number ("301") → name ("Универсальный кабинет")
+          const label =
+            (r.number && String(r.number).trim()) ||
+            (r.name && String(r.name).trim()) ||
+            "";
+          if (label) roomsMap[id] = label;
+        }
+      } catch (e) {
+        console.warn("[schedule] rooms parse failed:", e);
+      }
+    }
+
+    // Обогащаем уроки названием кабинета
+    const items = Array.isArray(data) ? data : data.items || data.data || [];
+    if (Array.isArray(items)) {
+      for (const lesson of items) {
+        const rid = Number(lesson.room_id);
+        if (rid && roomsMap[rid]) {
+          lesson.room_resolved_name = roomsMap[rid];
+        }
+      }
+    }
+
+    return NextResponse.json({
+      items,
+      rooms: roomsMap,
+    });
   } catch (e: any) {
+    console.error("[schedule] error:", e);
     return NextResponse.json(
       { detail: e.message || "Ошибка запроса" },
       { status: 500 }

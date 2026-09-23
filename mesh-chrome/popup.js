@@ -83,12 +83,9 @@ function showTokenInfo(expiresAt) {
   }
 
   const now = new Date();
-  const totalMin = 24 * 60;
-  const leftMin = Math.max(
-    0,
-    Math.round((exp.getTime() - now.getTime()) / 60000)
-  );
-  const pct = Math.min(100, Math.max(0, (leftMin / totalMin) * 100));
+  const totalMin = Math.round((exp.getTime() - now.getTime()) / 60000);
+  const HOURS_24 = 24 * 60;
+  const pct = Math.min(100, Math.max(0, (totalMin / HOURS_24) * 100));
 
   tokenExpires.textContent = exp.toLocaleString("ru-RU", {
     day: "2-digit",
@@ -98,23 +95,26 @@ function showTokenInfo(expiresAt) {
     minute: "2-digit",
   });
 
-  if (leftMin <= 0) {
+  if (totalMin <= 0) {
     tokenRemaining.textContent = "Истёк";
     progressFill.style.width = "0%";
-    progressFill.style.background =
-      "linear-gradient(90deg, #F87171, #DC2626)";
-  } else if (leftMin < 60) {
-    tokenRemaining.textContent = `${leftMin} мин. осталось`;
+    progressFill.style.background = "linear-gradient(90deg, #F87171, #DC2626)";
+  } else if (totalMin < 60) {
+    tokenRemaining.textContent = `${totalMin} мин. осталось`;
     progressFill.style.width = pct + "%";
-    progressFill.style.background =
-      "linear-gradient(90deg, #FBBF24, #F59E0B)";
-  } else {
-    const h = Math.floor(leftMin / 60);
-    const m = leftMin % 60;
+    progressFill.style.background = "linear-gradient(90deg, #FBBF24, #F59E0B)";
+  } else if (totalMin < 60 * 24) {
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
     tokenRemaining.textContent = `~${h} ч ${m} мин. осталось`;
     progressFill.style.width = pct + "%";
-    progressFill.style.background =
-      "linear-gradient(90deg, #4A9EFF, #7B61FF)";
+    progressFill.style.background = "linear-gradient(90deg, #4A9EFF, #7B61FF)";
+  } else {
+    const days = Math.floor(totalMin / (60 * 24));
+    const hours = Math.floor((totalMin % (60 * 24)) / 60);
+    tokenRemaining.textContent = `~${days} дн. ${hours} ч осталось`;
+    progressFill.style.width = "100%";
+    progressFill.style.background = "linear-gradient(90deg, #4A9EFF, #7B61FF)";
   }
   tokenInfoCard.style.display = "block";
 }
@@ -122,14 +122,22 @@ function showTokenInfo(expiresAt) {
 // ---------- Получение токена со страницы ----------
 
 async function grabMeshToken() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab || !tab.url || !tab.url.includes("school.mos.ru")) {
-    return { success: false, error: "Откройте school.mos.ru и авторизуйтесь" };
+  // Ищем вкладку school.mos.ru среди всех открытых
+  const tabs = await chrome.tabs.query({ url: "https://school.mos.ru/*" });
+
+  if (!tabs.length) {
+    return {
+      success: false,
+      error: "Откройте school.mos.ru в отдельной вкладке и авторизуйтесь",
+    };
   }
+
+  const tab = tabs[0];
   const results = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     files: ["content.js"],
   });
+
   return (
     results[0]?.result || { success: false, error: "Нет ответа от страницы" }
   );
@@ -226,7 +234,6 @@ async function initMain() {
     return;
   }
 
-  // Проверяем, что extensionToken живой
   const meRes = await apiMe(extensionToken);
   if (!meRes.ok) {
     await clearExtToken();
@@ -236,11 +243,9 @@ async function initMain() {
 
   showUser(meRes.data.user);
 
-  // Кнопки показываем всегда, когда привязан
   grantBtn.style.display = "block";
   refreshBtn.style.display = "block";
 
-  // Проверяем статус токена МЭШ
   const statusRes = await apiStatus(extensionToken);
   if (!statusRes.ok) {
     setStatus("Ошибка статуса: " + (statusRes.data.detail || ""), "err");
@@ -258,7 +263,7 @@ async function initMain() {
   }
 
   if (st.has_token && !st.is_valid) {
-    setStatus("Токен МЭШ истёк. Нажмите «Разрешить доступ».", "err");
+    setStatus("Токен МЭШ истёк. Нажмите «Обновить токен МЭШ».", "err");
     grantBtn.textContent = "Перепривязать токен МЭШ";
     return;
   }
@@ -270,10 +275,17 @@ async function initMain() {
 async function grantMeshAccess() {
   if (!extensionToken) {
     showLinkScreen();
+    setStatus("Токен МЭШ сохранён.", "ok");
+    showUser(send.data.user);
+    showTokenInfo(send.data.expiresAt);
+    grantBtn.textContent = "Обновить токен МЭШ";
+
+    // Уведомляем background, чтобы он сразу проверил срок
+    chrome.runtime.sendMessage({ type: "tokenUpdated" }).catch(() => { });
     return;
   }
 
-  setStatus("Получаю токен со страницы...", "info");
+  setStatus("Ищу вкладку school.mos.ru...", "info");
   grantBtn.disabled = true;
 
   const pageResult = await grabMeshToken();
@@ -284,6 +296,7 @@ async function grantMeshAccess() {
   }
 
   meshToken = pageResult.token;
+  console.log("Token source:", pageResult.source);
 
   setStatus("Отправляю токен на сервер...", "info");
   const send = await apiSendMeshToken(extensionToken, meshToken);

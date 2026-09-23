@@ -9,7 +9,7 @@ import Link from "next/link";
 export default function LoginPage() {
   const router = useRouter();
   const params = useSearchParams();
-  const from = params.get("from") || "/dashboard";
+  const from = params.get("from") || "/dashboard/schedule";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -68,14 +68,14 @@ export default function LoginPage() {
               className="mt-1"
             />
           </div>
-            
+
           {error && <div className="text-sm text-red-300 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
-<div className="text-center text-xs text-slate-500 mt-2">
-  Нет аккаунта?{" "}
-  <Link href="/register" className="text-blue-600 hover:underline">
-    Зарегистрироваться
-  </Link>
-</div>
+          <div className="text-center text-xs text-slate-500 mt-2">
+            Нет аккаунта?{" "}
+            <Link href="/register" className="text-blue-600 hover:underline">
+              Зарегистрироваться
+            </Link>
+          </div>
           <Button type="submit" disabled={loading} className="w-full">
             {loading ? "Вхожу..." : "Войти"}
           </Button>

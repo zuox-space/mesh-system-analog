@@ -4,9 +4,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const teacherNav = [
-  { href: "/dashboard", label: "Обзор" },
   { href: "/dashboard/token", label: "Токен" },
   { href: "/dashboard/schedule", label: "Расписание" },
+  { href: "/dashboard/ktp", label: "КТП" },          // ← новый пункт
+
   { href: "/dashboard/extension", label: "Расширение" },
 ];
 
@@ -14,11 +15,15 @@ const adminNav = [
   { href: "/admin", label: "Сводка" },
   { href: "/admin/users", label: "Пользователи" },
   { href: "/admin/tokens", label: "Токены" },
+
   { href: "/admin/logs", label: "Логи" },
 ];
 
 export function Sidebar({ role }: { role: "TEACHER" | "ADMIN" }) {
   const path = usePathname();
+
+  // Админ видит всё: dashboard-пункты + admin-пункты
+  // Учитель — только teacherNav (без «Обзор»)
   const items = role === "ADMIN" ? [...teacherNav, ...adminNav] : teacherNav;
 
   return (
@@ -47,11 +52,10 @@ export function Sidebar({ role }: { role: "TEACHER" | "ADMIN" }) {
             <Link
               key={it.href}
               href={it.href}
-              className={`block px-2.5 py-1.5 rounded-md text-[13px] transition ${
-                active
-                  ? "bg-blue-50 text-blue-700 font-medium border border-blue-200"
-                  : "text-slate-600 hover:text-slate-900 hover:bg-slate-50 border border-transparent"
-              }`}
+              className={`block px-2.5 py-1.5 rounded-md text-[13px] transition ${active
+                ? "bg-blue-50 text-blue-700 font-medium border border-blue-200"
+                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50 border border-transparent"
+                }`}
             >
               {it.label}
             </Link>
