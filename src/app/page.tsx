@@ -8,5 +8,5 @@ export default async function Home() {
   if (user.role === "ADMIN") redirect("/admin");
 
   // Учитель — сразу на токен
-  redirect("/dashboard/schedule");
+  redirect("/dashboard");
 }

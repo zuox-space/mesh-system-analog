@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth";
+import { cacheGet, cacheSet, TTL } from "@/lib/cache";
 
 export async function GET(req: Request) {
   const user = await getCurrentUser();
@@ -63,9 +64,13 @@ export async function GET(req: Request) {
   scheduleUrl.searchParams.set("per_page", "4000");
   scheduleUrl.searchParams.set("original", "true");
 
-  // ============ 2. Кабинеты ============
-  const roomsUrl =
-    "https://school.mos.ru/api/ej/core/teacher/v1/rooms";
+  // ============ 2. Кабинеты (кэш на час) ============
+  const roomsUrl = "https://school.mos.ru/api/ej/core/teacher/v1/rooms";
+  const roomsCacheKey = `rooms:${teacherId}`;
+
+  let roomsMap: Record<number, string> =
+    cacheGet<Record<number, string>>(roomsCacheKey) || {};
+  const roomsFromCache = Object.keys(roomsMap).length > 0;
 
   try {
     const [schRes, roomsRes] = await Promise.all([
@@ -73,10 +78,12 @@ export async function GET(req: Request) {
         headers: { ...headers, "x-mes-subsystem": "teacherweb" },
         cache: "no-store",
       }),
-      fetch(roomsUrl, {
-        headers: { ...headers, "x-mes-subsystem": "teacherweb" },
-        cache: "no-store",
-      }),
+      roomsFromCache
+        ? Promise.resolve(null)
+        : fetch(roomsUrl, {
+            headers: { ...headers, "x-mes-subsystem": "teacherweb" },
+            cache: "no-store",
+          }),
     ]);
 
     if (!schRes.ok) {
@@ -89,9 +96,8 @@ export async function GET(req: Request) {
 
     const data = await schRes.json();
 
-    // Строим карту room_id → название
-    let roomsMap: Record<number, string> = {};
-    if (roomsRes.ok) {
+    // Если кабинеты не из кэша — загружаем и кэшируем
+    if (roomsRes && roomsRes.ok) {
       try {
         const roomsData = await roomsRes.json();
         const roomsList = Array.isArray(roomsData)
@@ -101,16 +107,22 @@ export async function GET(req: Request) {
         for (const r of roomsList) {
           const id = Number(r.id);
           if (!id) continue;
-          // Приоритет: number ("301") → name ("Универсальный кабинет")
           const label =
             (r.number && String(r.number).trim()) ||
             (r.name && String(r.name).trim()) ||
             "";
           if (label) roomsMap[id] = label;
         }
+
+        cacheSet(roomsCacheKey, roomsMap, TTL.ROOMS);
+        console.log(
+          `[schedule] rooms cached: ${Object.keys(roomsMap).length}`
+        );
       } catch (e) {
         console.warn("[schedule] rooms parse failed:", e);
       }
+    } else if (roomsFromCache) {
+      console.log(`[schedule] rooms from cache`);
     }
 
     // Обогащаем уроки названием кабинета
