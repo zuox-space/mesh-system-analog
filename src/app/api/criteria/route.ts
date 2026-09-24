@@ -16,6 +16,7 @@ type PeriodLesson = {
   student_ids: number[];
   has_homework: boolean;
   has_ktp: boolean;
+  is_launched: boolean;
   plan_id: number | null;
 };
 
@@ -127,7 +128,21 @@ export async function GET() {
 
     const items = Array.isArray(data) ? data : data.items || data.data || [];
 
-    // Группы
+    // ============ План пользователя (для критерия «Запуск») ============
+    const plan = await prisma.lessonPlan.findUnique({
+      where: { userId: user.id },
+      include: { lessons: true },
+    });
+
+    const planStatusMap = new Map<string, string>();
+    if (plan) {
+      for (const pl of plan.lessons) {
+        const key = `${pl.date}|${pl.time}|${pl.groupId}`;
+        planStatusMap.set(key, pl.status);
+      }
+    }
+
+    // ============ Группы ============
     const groupsMap = new Map<
       number,
       {
@@ -159,7 +174,7 @@ export async function GET() {
       }
     }
 
-    // Ученики — с кэшем
+    // ============ Ученики ============
     const CONCURRENCY = 5;
     const groupList = [...groupsMap.values()];
     for (let i = 0; i < groupList.length; i += CONCURRENCY) {
@@ -212,12 +227,12 @@ export async function GET() {
               g.student_ids = ids;
               cacheSet(studentsCacheKey, ids, TTL.STUDENTS);
             }
-          } catch {}
+          } catch { }
         })
       );
     }
 
-    // ============ Статусы ДЗ через /homework_presence ============
+    // ============ Presence (ДЗ) ============
     const lessonIdsToCheck: number[] = [];
     for (const lesson of items) {
       if (lesson.cancelled) continue;
@@ -237,7 +252,7 @@ export async function GET() {
     );
     console.log(`[criteria] presence loaded: ${presenceMap.size}`);
 
-    // Уроки
+    // ============ Уроки ============
     const lessons: PeriodLesson[] = [];
 
     for (const lesson of items) {
@@ -270,16 +285,20 @@ export async function GET() {
         : [];
       const hasToGive = toGive.length > 0;
 
-      // Presence
       const presence = presenceMap.get(Number(lesson.id));
       const isAbsences = presence?.is_homework_absences === true;
       const isExist = presence?.is_homework_exist === true;
 
-      // ДЗ считается "проставленным", если задано ИЛИ явно «без ДЗ»
+      // ДЗ задано, если: to_give, ИЛИ presence (exist), ИЛИ presence (absences)
       const hasHomework = hasToGive || isAbsences || isExist;
 
       const gid = Number(lesson.group_id);
       const grp = groupsMap.get(gid);
+
+      const planKey = `${dateIso}|${timeStr}|${gid}`;
+      const planStatus = planStatusMap.get(planKey);
+      const isLaunched =
+        planStatus === "finished" || planStatus === "running";
 
       lessons.push({
         group_id: gid,
@@ -291,6 +310,7 @@ export async function GET() {
         student_ids: grp?.student_ids || [],
         has_homework: hasHomework,
         has_ktp: hasKtp,
+        is_launched: isLaunched,
         plan_id: planId,
       });
     }
@@ -300,7 +320,7 @@ export async function GET() {
 
     const totalAll = lessons.length;
 
-    // КТП (цель 95%)
+    // ============ КТП (цель 95%) ============
     const ktpDone = lessons.filter((l) => l.has_ktp).length;
     const ktpFuturePossible = futureLessons.filter((l) => !l.has_ktp).length;
     const ktpMaxPossible = ktpDone + ktpFuturePossible;
@@ -311,9 +331,11 @@ export async function GET() {
     const ktpPassed = ktpPercent >= ktpTarget;
     const ktpReachable = ktpMaxPercent >= ktpTarget;
 
-    // ДЗ (цель 95%)
+    // ============ ДЗ (цель 95%) ============
     const hwDone = lessons.filter((l) => l.has_homework).length;
-    const hwFuturePossible = futureLessons.filter((l) => !l.has_homework).length;
+    const hwFuturePossible = futureLessons.filter(
+      (l) => !l.has_homework
+    ).length;
     const hwMaxPossible = hwDone + hwFuturePossible;
 
     const hwPercent = totalAll > 0 ? (hwDone / totalAll) * 100 : 0;
@@ -322,8 +344,24 @@ export async function GET() {
     const hwPassed = hwPercent >= hwTarget;
     const hwReachable = hwMaxPercent >= hwTarget;
 
+    // ============ Запуск (цель 30%) ============
+    const launchDone = lessons.filter((l) => l.is_launched).length;
+    const launchFuturePossible = futureLessons.filter(
+      (l) => !l.is_launched
+    ).length;
+    const launchMaxPossible = launchDone + launchFuturePossible;
+
+    const launchPercent = totalAll > 0 ? (launchDone / totalAll) * 100 : 0;
+    const launchMaxPercent =
+      totalAll > 0 ? (launchMaxPossible / totalAll) * 100 : 0;
+    const launchTarget = 30;
+    const launchPassed = launchPercent >= launchTarget;
+    const launchReachable = launchMaxPercent >= launchTarget;
+
+    // ============ Проблемные уроки ============
     const ktpProblemLessons = lessons.filter((l) => !l.has_ktp);
     const hwProblemLessons = lessons.filter((l) => !l.has_homework);
+    const launchProblemLessons = lessons.filter((l) => !l.is_launched);
 
     const sortProblems = (arr: PeriodLesson[]) =>
       [...arr].sort((a, b) => {
@@ -361,8 +399,17 @@ export async function GET() {
         hw_reachable: hwReachable,
         hw_missing_lessons: sortProblems(hwProblemLessons),
 
-        overall_passed: ktpPassed && hwPassed,
-        overall_reachable: ktpReachable && hwReachable,
+        launch_done: launchDone,
+        launch_missing: totalAll - launchDone,
+        launch_percent: Math.round(launchPercent * 10) / 10,
+        launch_max_percent: Math.round(launchMaxPercent * 10) / 10,
+        launch_target: launchTarget,
+        launch_passed: launchPassed,
+        launch_reachable: launchReachable,
+        launch_missing_lessons: sortProblems(launchProblemLessons),
+
+        overall_passed: ktpPassed && hwPassed && launchPassed,
+        overall_reachable: ktpReachable && hwReachable && launchReachable,
       },
     });
   } catch (e: any) {

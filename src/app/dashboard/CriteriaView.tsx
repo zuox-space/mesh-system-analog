@@ -5,18 +5,7 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { Card, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { useToast, ToastContainer } from "@/components/ui/Toast";
-
-type MissingLesson = {
-  group_id: number;
-  group_name: string;
-  date: string;
-  time: string;
-  lesson_name: string;
-  subject_id: number;
-  student_ids: number[];
-  plan_id: number | null;
-};
+import { useToast } from "@/components/ui/Toast";
 
 type Criteria = {
   period: { from: string; to: string };
@@ -33,7 +22,6 @@ type Criteria = {
   ktp_target: number;
   ktp_passed: boolean;
   ktp_reachable: boolean;
-  ktp_missing_lessons: MissingLesson[];
 
   hw_given: number;
   hw_missing: number;
@@ -42,7 +30,14 @@ type Criteria = {
   hw_target: number;
   hw_passed: boolean;
   hw_reachable: boolean;
-  hw_missing_lessons: MissingLesson[];
+
+  launch_done: number;
+  launch_missing: number;
+  launch_percent: number;
+  launch_max_percent: number;
+  launch_target: number;
+  launch_passed: boolean;
+  launch_reachable: boolean;
 
   overall_passed: boolean;
   overall_reachable: boolean;
@@ -53,19 +48,21 @@ function formatDateShort(iso: string): string {
   return `${d}.${m}`;
 }
 
-function isoToday(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+// Сколько ещё нужно сделать, чтобы достичь цели
+function neededToTarget(
+  total: number,
+  target: number,
+  done: number
+): number {
+  const required = Math.ceil(total * (target / 100));
+  return Math.max(0, required - done);
 }
 
 export function CriteriaView() {
   const [criteria, setCriteria] = useState<Criteria | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [createLesson, setCreateLesson] = useState<MissingLesson | null>(null);
-  const { toasts, push, remove } = useToast();
-
-  const todayIso = isoToday();
+  const { push } = useToast();
 
   async function load() {
     setLoading(true);
@@ -98,36 +95,6 @@ export function CriteriaView() {
   useEffect(() => {
     load();
   }, []);
-
-  async function setEmpty(lesson: MissingLesson) {
-    if (lesson.date < todayIso) {
-      push("Нельзя проставить ДЗ задним числом", "err");
-      return;
-    }
-    if (!lesson.student_ids.length) {
-      push("Нет списка учеников", "err");
-      return;
-    }
-
-    const r = await fetch("/api/homework/set-empty", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        group_id: lesson.group_id,
-        subject_id: lesson.subject_id,
-        date_assigned_on: lesson.date,
-        date_prepared_for: lesson.date,
-        student_ids: lesson.student_ids,
-      }),
-    });
-    const data = await r.json();
-    if (!r.ok) {
-      push("Ошибка: " + (data.detail || "неизвестно"), "err");
-      return;
-    }
-    push("Без ДЗ проставлено", "ok");
-    load();
-  }
 
   async function updateAllKtp() {
     if (!confirm("Обновить все КТП? Это может занять 10–30 секунд.")) return;
@@ -181,6 +148,24 @@ export function CriteriaView() {
   if (!criteria) return null;
 
   const { period } = criteria;
+  const canEarn = criteria.overall_reachable && !criteria.overall_passed;
+
+  // Сколько нужно до цели по каждому критерию
+  const hwNeeded = neededToTarget(
+    criteria.total_lessons,
+    criteria.hw_target,
+    criteria.hw_given
+  );
+  const ktpNeeded = neededToTarget(
+    criteria.total_lessons,
+    criteria.ktp_target,
+    criteria.ktp_linked
+  );
+  const launchNeeded = neededToTarget(
+    criteria.total_lessons,
+    criteria.launch_target,
+    criteria.launch_done
+  );
 
   return (
     <div className="space-y-3 w-full">
@@ -225,20 +210,40 @@ export function CriteriaView() {
                 <b className="text-slate-700">ДЗ</b> ≥ {criteria.hw_target}%
                 уроков имеют задание
               </span>
+              <span>
+                <b className="text-slate-700">Запуск</b> ≥{" "}
+                {criteria.launch_target}% уроков запущены
+              </span>
               <span className="text-amber-700">
                 ⚠ Хотя бы один не выполнен → надбавка = 0
               </span>
             </div>
           </div>
 
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={load}
-            disabled={loading}
-          >
-            {loading ? "..." : "Обновить"}
-          </Button>
+          <div className="flex items-center gap-3 flex-wrap shrink-0">
+            {canEarn && (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-300">
+                <span className="text-[16px] leading-none">💰</span>
+                <div className="leading-tight">
+                  <div className="text-[12px] font-semibold text-emerald-800">
+                    Ещё можно получить 5000 ₽
+                  </div>
+                  <div className="text-[10px] text-emerald-600">
+                    исправьте недоработки ниже
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={load}
+              disabled={loading}
+            >
+              {loading ? "..." : "Обновить"}
+            </Button>
+          </div>
         </div>
       </Card>
 
@@ -276,6 +281,18 @@ export function CriteriaView() {
                     (нужно {criteria.hw_target}%)
                   </div>
                 )}
+                {!criteria.launch_reachable && (
+                  <div>
+                    • <b>Запуск:</b> даже если запустить все будущие уроки,
+                    максимум{" "}
+                    <b>
+                      {typeof criteria.launch_max_percent === "number"
+                        ? `${criteria.launch_max_percent}%`
+                        : "—"}
+                    </b>{" "}
+                    (нужно {criteria.launch_target}%)
+                  </div>
+                )}
                 <div className="pt-1 text-red-600">
                   Догнать критерий невозможно — прошедшие уроки уже испортили
                   статистику. Надбавка за этот период <b>не будет начислена</b>.
@@ -286,8 +303,8 @@ export function CriteriaView() {
         </div>
       )}
 
-      {/* ============ Две колонки ============ */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 w-full items-start">
+      {/* ============ Три колонки ============ */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 w-full items-start">
         {/* --- ДЗ --- */}
         <Card className="w-full flex flex-col">
           <div className="flex items-center justify-between mb-2">
@@ -310,38 +327,38 @@ export function CriteriaView() {
             maxPercent={criteria.hw_max_percent}
           />
 
-          <div className="flex items-center justify-between text-[11px] text-slate-500 my-3">
-            <span>
-              сделано: <b className="text-slate-700">{criteria.hw_given}</b> из{" "}
-              <b className="text-slate-700">{criteria.total_lessons}</b>
-            </span>
-            <span>
-              не хватает:{" "}
-              <b className={criteria.hw_missing > 0 ? "text-amber-700" : "text-slate-700"}>
-                {criteria.hw_missing}
-              </b>
-            </span>
+          <div className="my-3 space-y-1">
+            <div className="flex items-center justify-between text-[11px] text-slate-500">
+              <span>
+                сделано: <b className="text-slate-700">{criteria.hw_given}</b> из{" "}
+                <b className="text-slate-700">{criteria.total_lessons}</b>
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-[11px] text-slate-500">
+              <span>
+                до цели:{" "}
+                <b
+                  className={
+                    hwNeeded > 0 ? "text-amber-700" : "text-emerald-600"
+                  }
+                >
+                  {hwNeeded}
+                </b>
+              </span>
+              <span className="text-slate-400">
+                всего без ДЗ: <b className="text-slate-600">{criteria.hw_missing}</b>
+              </span>
+            </div>
           </div>
 
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-[11px] font-semibold text-slate-500">
-              Проблемные уроки ({criteria.hw_missing_lessons.length})
-            </div>
+          <div className="mt-auto pt-2 border-t border-slate-100">
             <Link
               href="/dashboard/homework"
               className="text-[11px] text-blue-600 hover:text-blue-800 hover:underline"
             >
-              Все ДЗ →
+              Перейти к домашним заданиям →
             </Link>
           </div>
-
-          <ProblemList
-            lessons={criteria.hw_missing_lessons}
-            todayIso={todayIso}
-            actionType="homework"
-            onSetEmpty={setEmpty}
-            onCreate={(l) => setCreateLesson(l)}
-          />
         </Card>
 
         {/* --- КТП --- */}
@@ -366,17 +383,29 @@ export function CriteriaView() {
             maxPercent={criteria.ktp_max_percent}
           />
 
-          <div className="flex items-center justify-between text-[11px] text-slate-500 my-3">
-            <span>
-              сделано: <b className="text-slate-700">{criteria.ktp_linked}</b> из{" "}
-              <b className="text-slate-700">{criteria.total_lessons}</b>
-            </span>
-            <span>
-              не хватает:{" "}
-              <b className={criteria.ktp_missing > 0 ? "text-amber-700" : "text-slate-700"}>
-                {criteria.ktp_missing}
-              </b>
-            </span>
+          <div className="my-3 space-y-1">
+            <div className="flex items-center justify-between text-[11px] text-slate-500">
+              <span>
+                сделано: <b className="text-slate-700">{criteria.ktp_linked}</b>{" "}
+                из <b className="text-slate-700">{criteria.total_lessons}</b>
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-[11px] text-slate-500">
+              <span>
+                до цели:{" "}
+                <b
+                  className={
+                    ktpNeeded > 0 ? "text-amber-700" : "text-emerald-600"
+                  }
+                >
+                  {ktpNeeded}
+                </b>
+              </span>
+              <span className="text-slate-400">
+                всего без КТП:{" "}
+                <b className="text-slate-600">{criteria.ktp_missing}</b>
+              </span>
+            </div>
           </div>
 
           {!criteria.ktp_passed && (
@@ -392,39 +421,74 @@ export function CriteriaView() {
             </div>
           )}
 
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-[11px] font-semibold text-slate-500">
-              Проблемные уроки ({criteria.ktp_missing_lessons.length})
-            </div>
+          <div className="mt-auto pt-2 border-t border-slate-100">
             <Link
               href="/dashboard/ktp"
               className="text-[11px] text-blue-600 hover:text-blue-800 hover:underline"
             >
-              Все КТП →
+              Перейти к КТП →
             </Link>
           </div>
+        </Card>
 
-          <ProblemList
-            lessons={criteria.ktp_missing_lessons}
-            todayIso={todayIso}
-            actionType="ktp"
+        {/* --- Запуск уроков --- */}
+        <Card className="w-full flex flex-col">
+          <div className="flex items-center justify-between mb-2">
+            <CardTitle>Запуск уроков</CardTitle>
+            {criteria.launch_passed ? (
+              <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">
+                ✓
+              </span>
+            ) : (
+              <span className="text-[10px] font-semibold text-red-700 bg-red-50 border border-red-200 rounded px-1.5 py-0.5">
+                ✕
+              </span>
+            )}
+          </div>
+
+          <ProgressBar
+            current={criteria.launch_percent}
+            target={criteria.launch_target}
+            passed={criteria.launch_passed}
+            maxPercent={criteria.launch_max_percent}
           />
+
+          <div className="my-3 space-y-1">
+            <div className="flex items-center justify-between text-[11px] text-slate-500">
+              <span>
+                запущено:{" "}
+                <b className="text-slate-700">{criteria.launch_done}</b> из{" "}
+                <b className="text-slate-700">{criteria.total_lessons}</b>
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-[11px] text-slate-500">
+              <span>
+                до цели:{" "}
+                <b
+                  className={
+                    launchNeeded > 0 ? "text-amber-700" : "text-emerald-600"
+                  }
+                >
+                  {launchNeeded}
+                </b>
+              </span>
+              <span className="text-slate-400">
+                всего не запущено:{" "}
+                <b className="text-slate-600">{criteria.launch_missing}</b>
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-auto pt-2 border-t border-slate-100">
+            <Link
+              href="/dashboard/launch"
+              className="text-[11px] text-blue-600 hover:text-blue-800 hover:underline"
+            >
+              Перейти к плану запуска →
+            </Link>
+          </div>
         </Card>
       </div>
-
-      {createLesson && (
-        <CreateModal
-          lesson={createLesson}
-          onClose={() => setCreateLesson(null)}
-          onSaved={() => {
-            setCreateLesson(null);
-            load();
-          }}
-          toast={push}
-        />
-      )}
-
-      <ToastContainer toasts={toasts} onRemove={remove} />
     </div>
   );
 }
@@ -445,8 +509,8 @@ function ProgressBar({
   const barColor = passed
     ? "bg-emerald-500"
     : current >= target * 0.7
-    ? "bg-amber-500"
-    : "bg-red-500";
+      ? "bg-amber-500"
+      : "bg-red-500";
 
   const isUnreachable = maxPercent !== undefined && maxPercent < target;
 
@@ -478,210 +542,6 @@ function ProgressBar({
           максимум достижимого: <b>{maxPercent}%</b>
         </div>
       )}
-    </div>
-  );
-}
-
-/* ============ Список проблемных уроков ============ */
-
-function ProblemList({
-  lessons,
-  todayIso,
-  actionType,
-  onSetEmpty,
-  onCreate,
-}: {
-  lessons: MissingLesson[];
-  todayIso: string;
-  actionType: "homework" | "ktp";
-  onSetEmpty?: (l: MissingLesson) => void;
-  onCreate?: (l: MissingLesson) => void;
-}) {
-  const sorted = [...lessons].sort((a, b) => {
-    const aFuture = a.date >= todayIso;
-    const bFuture = b.date >= todayIso;
-    if (aFuture && !bFuture) return -1;
-    if (!aFuture && bFuture) return 1;
-    return a.date.localeCompare(b.date);
-  });
-
-  if (sorted.length === 0) {
-    return (
-      <div className="text-[11px] text-slate-400 italic py-3 text-center">
-        Нет проблемных уроков
-      </div>
-    );
-  }
-
-  return (
-    <div className="max-h-72 overflow-y-auto rounded-md border border-slate-200 -mx-1">
-      <div className="divide-y divide-slate-100">
-        {sorted.map((l, i) => {
-          const past = l.date < todayIso;
-
-          return (
-            <div
-              key={i}
-              className={`flex items-center gap-2 px-2 py-1.5 text-[11px] ${
-                past ? "opacity-60" : ""
-              }`}
-            >
-              <span className="font-mono text-[10px] text-slate-500 w-10 shrink-0">
-                {formatDateShort(l.date)}
-              </span>
-              <span className="font-mono text-[10px] text-slate-400 w-9 shrink-0">
-                {l.time}
-              </span>
-              <span className="flex-1 text-slate-700 truncate">
-                {l.group_name}
-              </span>
-
-              {actionType === "homework" && (
-                <div className="shrink-0 flex items-center gap-1">
-                  {past ? (
-                    <span className="text-[10px] text-slate-400 italic">
-                      прошло
-                    </span>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => onSetEmpty?.(l)}
-                        className="text-[10px] text-amber-700 hover:text-amber-900 font-medium hover:underline whitespace-nowrap"
-                      >
-                        без ДЗ
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onCreate?.(l)}
-                        className="text-[10px] text-blue-600 hover:text-blue-800 font-medium hover:underline whitespace-nowrap"
-                      >
-                        задать
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {actionType === "ktp" && (
-                <div className="shrink-0">
-                  <span className="text-[10px] text-amber-600">нет КТП</span>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/* ============ Модалка создания ДЗ ============ */
-
-function CreateModal({
-  lesson,
-  onClose,
-  onSaved,
-  toast,
-}: {
-  lesson: MissingLesson;
-  onClose: () => void;
-  onSaved: () => void;
-  toast: (text: string, type?: "ok" | "err") => void;
-}) {
-  const [saving, setSaving] = useState(false);
-  const [description, setDescription] = useState("");
-
-  async function save() {
-    if (!description.trim()) {
-      toast("Введите текст ДЗ", "err");
-      return;
-    }
-    if (!lesson.student_ids.length) {
-      toast("Нет списка учеников", "err");
-      return;
-    }
-    setSaving(true);
-    try {
-      const r = await fetch("/api/homework/set-custom", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          group_id: lesson.group_id,
-          subject_id: lesson.subject_id,
-          date_assigned_on: lesson.date,
-          date_prepared_for: lesson.date,
-          student_ids: lesson.student_ids,
-          description,
-        }),
-      });
-      const data = await r.json();
-      if (!r.ok) {
-        toast("Ошибка: " + (data.detail || "неизвестно"), "err");
-        return;
-      }
-      toast("ДЗ задано", "ok");
-      onSaved();
-    } catch (e: any) {
-      toast("Ошибка: " + e.message, "err");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-lg rounded-xl bg-white shadow-2xl border border-slate-200 overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-start justify-between gap-3 px-5 py-3 border-b border-slate-100 bg-gradient-to-r from-blue-50 to-violet-50">
-          <div className="min-w-0">
-            <div className="text-[11px] font-mono text-slate-500 mb-0.5">
-              {lesson.date} · {lesson.time}
-            </div>
-            <div className="text-[14px] font-semibold text-slate-900 leading-tight">
-              {lesson.group_name}
-            </div>
-            <div className="text-[11px] text-slate-500 mt-0.5">
-              {lesson.lesson_name || ""}
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-slate-400 hover:text-slate-700 text-[18px]"
-          >
-            ✕
-          </button>
-        </div>
-
-        <div className="px-5 py-4">
-          <label className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
-            Текст домашнего задания
-          </label>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            rows={8}
-            placeholder="Например: §14, упр. 3, 4"
-            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-[13px] text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200/60 transition"
-            autoFocus
-          />
-        </div>
-
-        <div className="px-5 py-3 border-t border-slate-100 bg-slate-50 flex justify-end gap-2">
-          <Button size="sm" variant="secondary" onClick={onClose}>
-            Отмена
-          </Button>
-          <Button size="sm" variant="primary" onClick={save} disabled={saving}>
-            {saving ? "Сохраняю..." : "Задать ДЗ"}
-          </Button>
-        </div>
-      </div>
     </div>
   );
 }

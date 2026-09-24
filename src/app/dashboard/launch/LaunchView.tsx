@@ -5,246 +5,298 @@ import { useState, useEffect, useMemo } from "react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 
-type Lesson = {
+type PlannedLesson = {
   id: number;
   date: string;
   time: string;
-  study_ordinal: number;
-  lesson_name: string;
-  topic_name: string;
-  group_id: number;
-  group_name: string;
-  class_unit_name: string;
-  subject_id: number;
-  subject_name: string;
-  room_name: string;
-  script_uuid: string | null;
-  script_uuid_material: string | null;
-  script_name: string | null;
+  startAt: string;
+  groupId: number;
+  groupName: string;
+  subjectId: number;
+  subjectName: string;
+  lessonName: string;
+  lessonTemplateId: number | null;
+  launchUrl: string;
+  status: string;
+  errorMessage: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
 };
 
-type DayBucket = {
-  key: string;
-  weekday: string;
-  dayNumber: string;
-  month: string;
-  isToday: boolean;
-  isTomorrow: boolean;
-  isPast: boolean;
-  lessons: Lesson[];
+type PlanState = {
+  active: boolean;
+  planId: number | null;
+  stats?: {
+    total: number;
+    pending: number;
+    running: number;
+    finished: number;
+    failed: number;
+  };
+  lessons: PlannedLesson[];
 };
 
 function isoToday(): string {
   const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
-    2,
-    "0"
-  )}-${String(d.getDate()).padStart(2, "0")}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-function isoPlusDays(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
-    2,
-    "0"
-  )}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function buildDayBucket(
-  key: string,
-  lessons: Lesson[],
-  todayIso: string,
-  tomorrowIso: string
-): DayBucket {
-  const [y, m, d] = key.split("-").map(Number);
-  const date = new Date(y, m - 1, d);
-
-  const weekdayShort = date.toLocaleDateString("ru-RU", { weekday: "short" });
-  const weekday = weekdayShort.charAt(0).toUpperCase() + weekdayShort.slice(1);
-
-  return {
-    key,
-    weekday,
-    dayNumber: String(d).padStart(2, "0"),
-    month: date.toLocaleDateString("ru-RU", { month: "long" }),
-    isToday: key === todayIso,
-    isTomorrow: key === tomorrowIso,
-    isPast: key < todayIso,
-    lessons,
-  };
-}
-
-/**
- * Формирует URL для запуска сценария.
- * activity_url = https://uchebnik.mos.ru/cms/materials/{material_uuid}/launch?teacher_id=...&subject_id=...&group_id=...&mode=management
- * Финальная ссылка: school.mos.ru/api/launcher/v1/launch?activity_url={URL_ENCODED}
- */
-function buildLaunchUrl(
-  materialUuid: string,
-  teacherId: number,
-  subjectId: number,
-  groupId: number
-): string {
-  const activityUrl = `https://uchebnik.mos.ru/cms/materials/${materialUuid}/launch?teacher_id=${teacherId}&subject_id=${subjectId}&group_id=${groupId}&mode=management`;
-  return `https://school.mos.ru/api/launcher/v1/launch?activity_url=${encodeURIComponent(
-    activityUrl
-  )}`;
-}
-
-function shortLessonName(name: string): string {
-  if (!name) return "";
-  const words = name.trim().split(/\s+/);
-  const first = words[0] || "";
-  return first.length > 16 ? first.slice(0, 15) + "…" : first;
+function yearRange() {
+  const y = new Date().getFullYear();
+  return { from: `${y}-09-01`, to: `${y + 1}-08-31` };
 }
 
 export function LaunchView() {
-  const [dateFrom, setDateFrom] = useState(isoToday());
-  const [dateTo, setDateTo] = useState(isoPlusDays(7));
-  const [lessons, setLessons] = useState<Lesson[]>([]);
-  const [teacherId, setTeacherId] = useState<number | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const [plan, setPlan] = useState<PlanState | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [pastOpen, setPastOpen] = useState(false);
 
-  const todayIso = isoToday();
+  async function loadPlan() {
+    try {
+      const r = await fetch("/api/schedule/plan", { cache: "no-store" });
+      if (r.ok) {
+        const data = await r.json();
+        setPlan({
+          active: !!data.active,
+          planId: data.planId ?? null,
+          stats: data.stats,
+          lessons: data.lessons || [],
+        });
+      } else {
+        setPlan({ active: false, planId: null, lessons: [] });
+      }
+    } catch (e) {
+      console.warn("[launch] не удалось загрузить план:", e);
+      setPlan({ active: false, planId: null, lessons: [] });
+    } finally {
+      setLoaded(true);
+    }
+  }
 
-  async function load() {
-    setLoading(true);
+  // Создать/обновить план (POST пересоздаёт уроки, isActive = false)
+  async function upsertPlan() {
+    if (plan?.active) {
+      if (
+        !confirm(
+          "Обновление остановит план. После обновления его нужно будет запустить заново. Продолжить?"
+        )
+      )
+        return;
+    }
+
+    setBusy(true);
     setError(null);
     try {
-      const r = await fetch(
-        `/api/launch/lessons?from=${dateFrom}&to=${dateTo}`,
-        { cache: "no-store" }
-      );
-      const data = await r.json();
+      const { from, to } = yearRange();
+      const r = await fetch("/api/schedule/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ from, to }),
+      });
+      const data = await r.json().catch(() => ({}));
       if (!r.ok) {
-        setError(data.detail || "Ошибка загрузки");
-        return;
+        setError("Ошибка: " + (data.detail || "неизвестно"));
       }
-      setLessons(data.lessons || []);
-      setTeacherId(data.teacherId || null);
-      setHasLoadedOnce(true);
+      await loadPlan();
     } catch (e: any) {
-      setError(e.message);
+      setError("Ошибка: " + e.message);
     } finally {
-      setLoading(false);
+      setBusy(false);
+    }
+  }
+
+  // Запустить план (isActive = true)
+  async function activatePlan() {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await fetch("/api/schedule/plan/activate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setError("Ошибка запуска: " + (data.detail || "неизвестно"));
+      }
+      await loadPlan();
+    } catch (e: any) {
+      setError("Ошибка: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Остановить план (isActive = false)
+  async function deactivatePlan() {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await fetch("/api/schedule/plan", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setError("Ошибка остановки: " + (data.detail || "неизвестно"));
+      }
+      await loadPlan();
+    } catch (e: any) {
+      setError("Ошибка: " + e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Полностью удалить план (план + все уроки)
+  async function purgePlan() {
+    if (
+      !confirm(
+        "Удалить план полностью? Все уроки будут потеряны безвозвратно."
+      )
+    )
+      return;
+
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await fetch("/api/schedule/plan/purge", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setError("Ошибка удаления: " + (data.detail || "неизвестно"));
+      }
+      await loadPlan();
+    } catch (e: any) {
+      setError("Ошибка: " + e.message);
+    } finally {
+      setBusy(false);
     }
   }
 
   useEffect(() => {
-    load();
-  }, [dateFrom, dateTo]);
+    loadPlan();
+  }, []);
 
-  const days: DayBucket[] = useMemo(() => {
-    const map = new Map<string, Lesson[]>();
-    for (const l of lessons) {
-      if (!l.date) continue;
-      if (!map.has(l.date)) map.set(l.date, []);
-      map.get(l.date)!.push(l);
-    }
+  if (!loaded) {
+    return (
+      <Card className="w-full">
+        <div className="flex items-center justify-center py-10 gap-2">
+          <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+          <span className="text-[13px] text-slate-500">Загрузка плана…</span>
+        </div>
+      </Card>
+    );
+  }
 
-    const tomorrowIso = isoPlusDays(1);
+  const hasPlan = !!plan?.planId;
 
-    return [...map.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, arr]) =>
-        buildDayBucket(
-          key,
-          arr.sort((a, b) => (a.time || "").localeCompare(b.time || "")),
-          todayIso,
-          tomorrowIso
-        )
-      );
-  }, [lessons, todayIso]);
+  // ============ Нет плана ============
+  if (!hasPlan) {
+    return (
+      <Card className="w-full">
+        <div className="flex flex-col items-center gap-3 py-10">
+          <p className="text-slate-500 text-[13px]">План ещё не создан</p>
+          <Button
+            size="lg"
+            variant="primary"
+            onClick={upsertPlan}
+            disabled={busy}
+          >
+            {busy ? "Создание…" : "Загрузить план запуска уроков"}
+          </Button>
+          {error && (
+            <div className="text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-1.5 text-[12px]">
+              {error}
+            </div>
+          )}
+        </div>
+      </Card>
+    );
+  }
 
-  const futureDays = days.filter((d) => !d.isPast);
-  const pastDays = days.filter((d) => d.isPast);
+  // ============ План есть ============
+  const isActive = !!plan?.active;
+  const hasLessons = plan!.lessons.length > 0;
 
   return (
     <div className="space-y-3 w-full">
-      {/* ============ Пульт ============ */}
       <Card className="w-full !py-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex gap-1">
-            <QuickBtn
-              active={dateFrom === isoToday() && dateTo === isoPlusDays(7)}
-              onClick={() => {
-                setDateFrom(isoToday());
-                setDateTo(isoPlusDays(7));
-              }}
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <Button
+              size="md"
+              variant="primary"
+              onClick={upsertPlan}
+              disabled={busy}
             >
-              7д
-            </QuickBtn>
-            <QuickBtn
-              active={dateFrom === isoToday() && dateTo === isoToday()}
-              onClick={() => {
-                setDateFrom(isoToday());
-                setDateTo(isoToday());
-              }}
-            >
-              Сегодня
-            </QuickBtn>
-            <QuickBtn
-              active={dateFrom === isoToday() && dateTo === isoPlusDays(14)}
-              onClick={() => {
-                setDateFrom(isoToday());
-                setDateTo(isoPlusDays(14));
-              }}
-            >
-              14д
-            </QuickBtn>
-            <QuickBtn
-              active={dateFrom === isoToday() && dateTo === isoPlusDays(30)}
-              onClick={() => {
-                setDateFrom(isoToday());
-                setDateTo(isoPlusDays(30));
-              }}
-            >
-              30д
-            </QuickBtn>
+              {busy ? "Обновление…" : "Обновить план"}
+            </Button>
+
+            {!isActive && (
+              <Button
+                size="md"
+                variant="primary"
+                onClick={activatePlan}
+                disabled={busy}
+                className="!bg-emerald-600 hover:!bg-emerald-700 !border-emerald-600"
+              >
+                ▶ Автозапуск уроков
+              </Button>
+            )}
+
+            {isActive && (
+              <>
+                <span className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-emerald-50 border border-emerald-200 text-emerald-700 text-[13px] font-medium">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  Уроки запускаются
+                </span>
+                <Button
+                  size="md"
+                  variant="secondary"
+                  onClick={deactivatePlan}
+                  disabled={busy}
+                >
+                  ■ Остановить
+                </Button>
+              </>
+            )}
+
+            {busy && (
+              <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+            )}
           </div>
 
-          <div className="flex items-center gap-1 text-[11px]">
-            <span className="text-slate-400">с</span>
-            <input
-              type="date"
-              value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
-              className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px]"
-            />
-            <span className="text-slate-400">по</span>
-            <input
-              type="date"
-              value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
-              className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px]"
-            />
-          </div>
+          <div className="flex items-center gap-3 flex-wrap">
+            {plan?.stats && (
+              <div className="flex items-center gap-3 text-[11px]">
+                <span className="text-emerald-600">✓ {plan.stats.finished}</span>
+                {plan.stats.running > 0 && (
+                  <span className="text-blue-600">⚙ {plan.stats.running}</span>
+                )}
+                {plan.stats.pending > 0 && (
+                  <span className="text-slate-400">⏳ {plan.stats.pending}</span>
+                )}
+                {plan.stats.failed > 0 && (
+                  <span className="text-red-600">✕ {plan.stats.failed}</span>
+                )}
+                <span className="text-slate-500">
+                  всего: <b className="text-slate-700">{plan.stats.total}</b>
+                </span>
+              </div>
+            )}
 
-          {dateFrom === isoToday() && (
-            <span className="text-[10px] text-blue-600 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5">
-              с сегодня
-            </span>
-          )}
-
-          <div className="flex items-center gap-2">
             <Button
               size="sm"
               variant="secondary"
-              onClick={load}
-              disabled={loading}
+              onClick={purgePlan}
+              disabled={busy}
+              className="!text-red-600 !border-red-200 hover:!bg-red-50"
             >
-              {loading ? "..." : "Обновить"}
+              Удалить план
             </Button>
-            {loading && (
-              <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
-                <div className="w-3 h-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                <span>Загружаю...</span>
-              </div>
-            )}
           </div>
         </div>
 
@@ -255,57 +307,12 @@ export function LaunchView() {
         )}
       </Card>
 
-      {/* ============ Скелетоны ============ */}
-      {loading && !hasLoadedOnce && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 w-full items-start">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <SkeletonCard key={i} />
-          ))}
-        </div>
-      )}
-
-      {/* ============ Будущие дни ============ */}
-      {hasLoadedOnce && (
-        <div
-          className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 w-full items-start transition-opacity ${
-            loading ? "opacity-50 pointer-events-none" : "opacity-100"
-          }`}
-        >
-          {futureDays.map((d) => (
-            <DayCard key={d.key} day={d} teacherId={teacherId} />
-          ))}
-        </div>
-      )}
-
-      {/* ============ Прошедшие ============ */}
-      {hasLoadedOnce && pastDays.length > 0 && (
-        <div className="w-full">
-          <button
-            type="button"
-            onClick={() => setPastOpen((v) => !v)}
-            className="flex items-center gap-2 px-1 mb-1 text-[13px] font-semibold text-slate-400 hover:text-slate-600"
-          >
-            <span className="text-[10px]">{pastOpen ? "▾" : "▸"}</span>
-            <span>
-              Прошедшие (
-              {pastDays.reduce((acc, d) => acc + d.lessons.length, 0)})
-            </span>
-          </button>
-
-          {pastOpen && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 w-full items-start">
-              {pastDays.map((d) => (
-                <DayCard key={d.key} day={d} teacherId={teacherId} />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {hasLoadedOnce && days.length === 0 && !loading && !error && (
+      {hasLessons ? (
+        <PlanCalendar lessons={plan!.lessons} />
+      ) : (
         <Card className="w-full">
-          <p className="text-slate-400 text-[13px] text-center py-6">
-            Уроков за период нет.
+          <p className="text-slate-400 text-[13px] text-center py-8">
+            План создан, но уроков нет. Нажмите «Обновить план».
           </p>
         </Card>
       )}
@@ -313,120 +320,245 @@ export function LaunchView() {
   );
 }
 
-/* ============ Кнопка периода ============ */
+/* ============ КАЛЕНДАРЬ ПЛАНА ============ */
 
-function QuickBtn({
-  children,
-  active,
-  onClick,
-}: {
-  children: React.ReactNode;
-  active?: boolean;
-  onClick: () => void;
-}) {
+type WeekGroup = {
+  label: string;
+  days: { date: string; lessons: PlannedLesson[] }[];
+};
+
+type PeriodGroup = {
+  label: string;
+  from: string;
+  to: string;
+  weeks: WeekGroup[];
+  stats: {
+    total: number;
+    finished: number;
+    failed: number;
+    pending: number;
+  };
+};
+
+function PlanCalendar({ lessons }: { lessons: PlannedLesson[] }) {
+  const today = isoToday();
+  const now = useMemo(() => new Date(), []);
+
+  const periods = useMemo<PeriodGroup[]>(() => {
+    if (lessons.length === 0) return [];
+
+    const byDate = new Map<string, PlannedLesson[]>();
+    for (const l of lessons) {
+      if (!byDate.has(l.date)) byDate.set(l.date, []);
+      byDate.get(l.date)!.push(l);
+    }
+    for (const arr of byDate.values()) {
+      arr.sort((a, b) => a.time.localeCompare(b.time));
+    }
+
+    const dates = [...byDate.keys()].sort();
+    const first = dates[0];
+    const last = dates[dates.length - 1];
+
+    const periodsList: PeriodGroup[] = [];
+    let cur = parseDate(first);
+    const end = parseDate(last);
+
+    while (cur <= end) {
+      const day = cur.getDate();
+      let periodStart: Date;
+      let periodEnd: Date;
+
+      if (day >= 16) {
+        periodStart = new Date(cur.getFullYear(), cur.getMonth(), 16);
+        periodEnd = new Date(cur.getFullYear(), cur.getMonth() + 1, 15);
+      } else {
+        periodStart = new Date(cur.getFullYear(), cur.getMonth() - 1, 16);
+        periodEnd = new Date(cur.getFullYear(), cur.getMonth(), 15);
+      }
+
+      // Собираем даты периода с уроками
+      const periodDates: string[] = [];
+      const curIter = new Date(periodStart);
+      while (curIter <= periodEnd) {
+        const iso = isoOf(curIter);
+        if (byDate.has(iso)) periodDates.push(iso);
+        curIter.setDate(curIter.getDate() + 1);
+      }
+
+      if (periodDates.length > 0) {
+        // Группируем по неделям (пн–вс)
+        const weeks: WeekGroup[] = [];
+        let currentWeekDays: { date: string; lessons: PlannedLesson[] }[] = [];
+        let lastMonday = "";
+
+        for (const date of periodDates) {
+          const d = parseDate(date);
+          const dow = d.getDay();
+          const diffToMon = dow === 0 ? -6 : 1 - dow;
+          const monday = new Date(d);
+          monday.setDate(d.getDate() + diffToMon);
+          const mondayIso = isoOf(monday);
+
+          if (lastMonday && mondayIso !== lastMonday) {
+            if (currentWeekDays.length > 0) {
+              weeks.push(makeWeek(currentWeekDays));
+            }
+            currentWeekDays = [];
+          }
+
+          lastMonday = mondayIso;
+          currentWeekDays.push({
+            date,
+            lessons: byDate.get(date) || [],
+          });
+        }
+
+        if (currentWeekDays.length > 0) {
+          weeks.push(makeWeek(currentWeekDays));
+        }
+
+        const allPeriodLessons = periodDates.flatMap(
+          (d) => byDate.get(d) || []
+        );
+
+        periodsList.push({
+          label: `${formatRu(periodStart)} — ${formatRu(periodEnd)}`,
+          from: isoOf(periodStart),
+          to: isoOf(periodEnd),
+          weeks,
+          stats: {
+            total: allPeriodLessons.length,
+            finished: allPeriodLessons.filter((l) => l.status === "finished")
+              .length,
+            failed: allPeriodLessons.filter((l) => l.status === "failed").length,
+            pending: allPeriodLessons.filter((l) => l.status === "pending")
+              .length,
+          },
+        });
+      }
+
+      cur = new Date(periodEnd);
+      cur.setDate(cur.getDate() + 1);
+    }
+
+    return periodsList;
+  }, [lessons]);
+
+  if (periods.length === 0) {
+    return (
+      <Card className="w-full">
+        <p className="text-slate-400 text-[13px] text-center py-8">
+          Нет уроков в плане.
+        </p>
+      </Card>
+    );
+  }
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`px-2 py-1 rounded-md text-[11px] font-medium border transition ${
-        active
-          ? "bg-blue-50 text-blue-700 border-blue-200"
-          : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
-/* ============ Скелетон ============ */
-
-function SkeletonCard() {
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white shadow-sm flex flex-col overflow-hidden animate-pulse">
-      <div className="px-3 py-2 border-b border-slate-100 bg-slate-50">
-        <div className="flex items-baseline justify-between gap-2">
-          <div className="h-5 w-14 bg-slate-200 rounded" />
-          <div className="h-3 w-12 bg-slate-100 rounded" />
-        </div>
-      </div>
-      <div className="flex-1 p-1.5 space-y-1">
-        <div className="rounded-md border border-slate-100 bg-slate-50/60 p-2 space-y-1">
-          <div className="h-3 w-3/4 bg-slate-200 rounded" />
-          <div className="h-2.5 w-full bg-slate-100 rounded" />
-        </div>
-      </div>
+    <div className="space-y-3 w-full">
+      {periods.map((p) => (
+        <PeriodBlock key={p.from} period={p} today={today} now={now} />
+      ))}
     </div>
   );
 }
 
-/* ============ Карточка дня ============ */
+function makeWeek(
+  days: { date: string; lessons: PlannedLesson[] }[]
+): WeekGroup {
+  const wkStart = parseDate(days[0].date);
+  const wd = wkStart.getDay();
+  const wDiff = wd === 0 ? -6 : 1 - wd;
+  const wkMon = new Date(wkStart);
+  wkMon.setDate(wkStart.getDate() + wDiff);
+  const wkSun = new Date(wkMon);
+  wkSun.setDate(wkMon.getDate() + 6);
+  return {
+    label: `${formatShort(wkMon)} – ${formatShort(wkSun)}`,
+    days,
+  };
+}
 
-function DayCard({
-  day,
-  teacherId,
+function PeriodBlock({
+  period,
+  today,
+  now,
 }: {
-  day: DayBucket;
-  teacherId: number | null;
+  period: PeriodGroup;
+  today: string;
+  now: Date;
 }) {
-  const accent = day.isToday
-    ? "border-blue-300 shadow-blue-200/50"
-    : day.isTomorrow
-    ? "border-violet-200"
-    : day.isPast
-    ? "border-slate-200 opacity-70"
-    : "border-slate-200";
-
-  const withScript = day.lessons.filter((l) => l.script_uuid_material).length;
+  const progressPct =
+    period.stats.total > 0
+      ? Math.round((period.stats.finished / period.stats.total) * 100)
+      : 0;
 
   return (
-    <div
-      className={`rounded-lg border bg-white shadow-sm ${accent} flex flex-col overflow-hidden`}
-    >
-      <div
-        className={`px-3 py-2 border-b ${
-          day.isToday
-            ? "bg-gradient-to-r from-blue-50 to-violet-50 border-blue-100"
-            : "bg-slate-50 border-slate-100"
-        }`}
-      >
-        <div className="flex items-baseline justify-between gap-2">
-          <div className="flex items-baseline gap-1.5">
-            <span
-              className={`text-[20px] font-bold leading-none ${
-                day.isToday ? "text-blue-700" : "text-slate-800"
-              }`}
-            >
-              {day.dayNumber}
-            </span>
-            <span className="text-[11px] text-slate-500 uppercase tracking-wide">
-              {day.weekday}
-            </span>
+    <Card className="w-full !py-3">
+      <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+        <div>
+          <div className="text-[13px] font-semibold text-slate-800">
+            {period.label}
           </div>
-          <div className="text-[10px] text-slate-500">{day.month}</div>
+          <div className="text-[10px] text-slate-400 uppercase tracking-wider mt-0.5">
+            отчётный период
+          </div>
         </div>
-        {withScript > 0 && (
-          <div className="text-[10px] text-blue-600 font-medium mt-1">
-            со сценарием: {withScript}
-          </div>
-        )}
+
+        <div className="flex items-center gap-3 text-[11px]">
+          <span className="text-emerald-600">✓ {period.stats.finished}</span>
+          {period.stats.pending > 0 && (
+            <span className="text-amber-600">⏳ {period.stats.pending}</span>
+          )}
+          {period.stats.failed > 0 && (
+            <span className="text-red-600">✕ {period.stats.failed}</span>
+          )}
+          <span className="text-slate-500">
+            {period.stats.finished} / {period.stats.total}
+          </span>
+        </div>
       </div>
 
-      <div className="flex-1 p-1.5 space-y-1">
-        {day.lessons.length === 0 && (
-          <div className="text-[12px] text-slate-400 text-center py-6 flex flex-col items-center gap-1">
-            <span className="text-[16px]">🎉</span>
-            <span>Уроков нет</span>
-          </div>
-        )}
+      <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mb-3">
+        <div
+          className="h-full bg-gradient-to-r from-emerald-400 to-emerald-500 rounded-full transition-all"
+          style={{ width: `${progressPct}%` }}
+        />
+      </div>
 
-        {day.lessons.map((l, i) => (
-          <LessonRow
-            key={i}
-            lesson={l}
-            today={day.isToday}
-            past={day.isPast}
-            teacherId={teacherId}
+      <div className="flex flex-row gap-3 overflow-x-auto pb-1">
+        {period.weeks.map((week, wi) => (
+          <WeekColumn key={wi} week={week} today={today} now={now} />
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function WeekColumn({
+  week,
+  today,
+  now,
+}: {
+  week: WeekGroup;
+  today: string;
+  now: Date;
+}) {
+  return (
+    <div className="flex flex-col gap-1 min-w-[180px] shrink-0">
+      <div className="text-[10px] uppercase tracking-wider text-slate-400 font-medium pb-1 border-b border-slate-100">
+        {week.label}
+      </div>
+
+      <div className="flex flex-col gap-0.5">
+        {week.days.map(({ date, lessons }) => (
+          <DayRow
+            key={date}
+            date={date}
+            lessons={lessons}
+            today={today}
+            now={now}
           />
         ))}
       </div>
@@ -434,99 +566,129 @@ function DayCard({
   );
 }
 
-/* ============ Строка урока ============ */
-
-function LessonRow({
-  lesson,
+function DayRow({
+  date,
+  lessons,
   today,
-  past,
-  teacherId,
+  now,
 }: {
-  lesson: Lesson;
-  today: boolean;
-  past: boolean;
-  teacherId: number | null;
+  date: string;
+  lessons: PlannedLesson[];
+  today: string;
+  now: Date;
 }) {
-  const materialUuid = lesson.script_uuid_material || null;
+  const [y, m, d] = date.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  const isToday = date === today;
+  const isPast = date < today;
 
-  const canLaunch =
-    !past &&
-    materialUuid &&
-    teacherId &&
-    lesson.group_id &&
-    lesson.subject_id;
-
-  const launchUrl = canLaunch
-    ? buildLaunchUrl(
-        materialUuid!,
-        teacherId!,
-        lesson.subject_id,
-        lesson.group_id
-      )
-    : null;
+  const weekdayShort = dt.toLocaleDateString("ru-RU", { weekday: "short" });
 
   return (
     <div
-      className={`rounded-md border transition ${
-        past
-          ? "bg-slate-50/60 border-slate-100"
-          : materialUuid
-          ? "bg-blue-50/40 border-blue-100"
-          : "bg-slate-50/60 border-slate-100"
-      }`}
+      className={`flex items-center gap-2 px-1.5 py-1 rounded-md ${isToday
+        ? "bg-blue-50 border border-blue-200"
+        : isPast
+          ? "bg-slate-50/50"
+          : "bg-white"
+        }`}
     >
-      <div className="flex items-center gap-2 px-2 pt-1.5">
+      <div className="flex items-baseline gap-1 w-14 shrink-0">
         <span
-          className={`font-mono text-[10px] shrink-0 ${
-            today ? "text-blue-700 font-semibold" : "text-slate-500"
-          }`}
+          className={`text-[11px] font-mono font-semibold ${isToday ? "text-blue-700" : "text-slate-600"
+            }`}
         >
-          {lesson.time || "—"}
+          {String(d).padStart(2, "0")}.{String(m).padStart(2, "0")}
         </span>
-        <span className="flex-1 text-[11px] font-medium text-slate-800 truncate">
-          {shortLessonName(lesson.group_name || lesson.class_unit_name) ||
-            lesson.group_name ||
-            "—"}
+        <span className="text-[9px] text-slate-400 uppercase">
+          {weekdayShort}
         </span>
       </div>
 
-      <div className="px-2 pb-1.5">
-        {materialUuid ? (
-          <div className="text-[10px] text-slate-500 mt-0.5 line-clamp-1">
-            {lesson.script_name ||
-              lesson.topic_name ||
-              lesson.lesson_name ||
-              "Сценарий урока"}
-          </div>
-        ) : lesson.script_uuid ? (
-          <div className="text-[10px] text-slate-400 italic mt-0.5">
-            сценарий не разрешён
-          </div>
-        ) : (
-          <div className="text-[10px] text-slate-400 italic mt-0.5">
-            сценарий не прикреплён
-          </div>
-        )}
+      <div className="flex-1 flex flex-wrap gap-1">
+        {lessons.map((l) => (
+          <LessonSquare key={l.id} lesson={l} now={now} />
+        ))}
       </div>
-
-      {!past && (
-        <div className="px-2 pb-1.5 flex justify-end">
-          {launchUrl ? (
-            <a
-              href={launchUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[11px] text-blue-600 hover:text-blue-800 font-semibold hover:underline whitespace-nowrap"
-            >
-              ▶ Запустить урок
-            </a>
-          ) : (
-            <span className="text-[10px] text-slate-400 italic">
-              недоступно
-            </span>
-          )}
-        </div>
-      )}
     </div>
   );
+}
+
+function LessonSquare({
+  lesson,
+  now,
+}: {
+  lesson: PlannedLesson;
+  now: Date;
+}) {
+  let colorClass = "";
+  let tooltip = "";
+
+  const startAt = new Date(lesson.startAt);
+  const isFuture = startAt > now;
+  const hasUrl = !!lesson.launchUrl;
+
+  if (lesson.status === "finished") {
+    colorClass = "bg-emerald-500 border-emerald-600 hover:bg-emerald-600";
+    tooltip = `${lesson.time} — проведён`;
+  } else if (lesson.status === "running") {
+    colorClass = "bg-blue-500 border-blue-600 hover:bg-blue-600";
+    tooltip = `${lesson.time} — идёт сейчас`;
+  } else if (lesson.status === "failed") {
+    colorClass = "bg-red-500 border-red-600 hover:bg-red-600";
+    tooltip = `${lesson.time} — ошибка`;
+  } else {
+    if (isFuture) {
+      colorClass = "bg-amber-400 border-amber-500 hover:bg-amber-500";
+      tooltip = `${lesson.time} — ожидает запуска`;
+    } else {
+      colorClass = "bg-red-500 border-red-600 hover:bg-red-600";
+      tooltip = `${lesson.time} — не запущен`;
+    }
+  }
+
+  if (!hasUrl) {
+    colorClass = "bg-slate-200 border-slate-300";
+    tooltip = `${lesson.time} — нет ссылки на запуск`;
+  }
+
+  function handleClick() {
+    if (!hasUrl) return;
+    window.open(lesson.launchUrl, "_blank", "noopener,noreferrer");
+  }
+
+  return (
+    <div
+      title={tooltip}
+      onClick={handleClick}
+      className={`w-6 h-6 rounded-sm border transition ${colorClass} ${hasUrl ? "cursor-pointer hover:scale-110" : "cursor-not-allowed"
+        }`}
+    />
+  );
+}
+
+/* ============ Утилиты ============ */
+
+function parseDate(iso: string): Date {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function isoOf(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function formatRu(d: Date): string {
+  return d.toLocaleDateString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
+function formatShort(d: Date): string {
+  return d.toLocaleDateString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+  });
 }

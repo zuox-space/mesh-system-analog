@@ -5,6 +5,11 @@ import { getCurrentUser } from "@/lib/auth";
 import { fetchCurrentAcademicYear } from "@/lib/academic-year";
 import { cacheGet, cacheSet, TTL } from "@/lib/cache";
 
+function isoToDDMMYYYY(iso: string): string {
+  const [y, m, d] = iso.split("-");
+  return `${d}.${m}.${y}`;
+}
+
 export async function GET(req: Request) {
   const user = await getCurrentUser();
   if (!user) {
@@ -61,13 +66,12 @@ export async function GET(req: Request) {
     url.searchParams.set("per_page", "2000");
     url.searchParams.set("original", "true");
 
-    // ============ Расписание с кэшем на 5 минут ============
+    // ============ Расписание с кэшем ============
     const scheduleCacheKey = `schedule:${teacherId}:${dateFrom}:${dateTo}`;
     const cachedSchedule = cacheGet<any>(scheduleCacheKey);
 
     let schData: any;
     if (cachedSchedule) {
-      console.log("[homework/groups] schedule from cache");
       schData = cachedSchedule;
     } else {
       const r = await fetch(url.toString(), { headers, cache: "no-store" });
@@ -80,14 +84,12 @@ export async function GET(req: Request) {
       }
       schData = await r.json();
       cacheSet(scheduleCacheKey, schData, TTL.SCHEDULE);
-      console.log("[homework/groups] schedule cached");
     }
 
     const items = Array.isArray(schData)
       ? schData
       : schData.items || schData.data || [];
 
-    // Группируем по группам
     const groupsMap = new Map<
       number,
       {
@@ -151,8 +153,8 @@ export async function GET(req: Request) {
       const homeworkId = hasToGive
         ? Number(toGive[0].id)
         : hasToVerify
-        ? Number(toVerify[0].id)
-        : null;
+          ? Number(toVerify[0].id)
+          : null;
 
       g.lessons.push({
         id: lesson.id,
@@ -164,10 +166,93 @@ export async function GET(req: Request) {
         has_homework: hasHomework,
         has_to_give: hasToGive,
         has_to_verify: hasToVerify,
+        is_no_hw_note: false, // «Без домашнего задания» через homework_absences
         homework_id: homeworkId,
         homework_text: "",
         class_unit_id: Number(lesson.class_unit_id),
       });
+    }
+
+    // ============ Homework absences («Без домашнего задания») ============
+    const absencesSet = new Set<string>(); // "groupId|YYYY-MM-DD"
+    const ABS_CONCURRENCY = 5;
+    const groupListForAbs = [...groupsMap.values()];
+
+    for (let i = 0; i < groupListForAbs.length; i += ABS_CONCURRENCY) {
+      const chunk = groupListForAbs.slice(i, i + ABS_CONCURRENCY);
+
+      await Promise.all(
+        chunk.map(async (g) => {
+          const cacheKey = `absences:${g.group_id}:${dateFrom}:${dateTo}`;
+          const cachedDates = cacheGet<string[]>(cacheKey);
+          if (cachedDates) {
+            console.log(`[criteria] absences ${g.group_id}: ${cachedDates.length} (cache)`);
+            for (const d of cachedDates) {
+              absencesSet.add(`${g.group_id}|${d}`);
+            }
+            return;
+          }
+
+          try {
+            const absUrl = new URL(
+              "https://school.mos.ru/api/ej/core/teacher/v1/homework_absences"
+            );
+            absUrl.searchParams.set("begin_date", isoToDDMMYYYY(dateFrom));
+            absUrl.searchParams.set("end_date", isoToDDMMYYYY(dateTo));
+            absUrl.searchParams.set("group_id", String(g.group_id));
+            absUrl.searchParams.set("page", "1");
+            absUrl.searchParams.set("per_page", "100");
+
+            const absRes = await fetch(absUrl.toString(), {
+              headers: { ...headers, "x-mes-subsystem": "teacherweb" },
+            });
+
+            if (!absRes.ok) {
+              console.warn(
+                `[homework/groups] absences ${g.group_id}: ${absRes.status}`
+              );
+              return;
+            }
+
+            const absData = await absRes.json();
+            const list = Array.isArray(absData)
+              ? absData
+              : absData.items || absData.data || [];
+
+            const dates: string[] = [];
+            for (const a of list) {
+              if (a.deleted_at) continue;
+              if (!a.date) continue;
+              const [dd, mm, yyyy] = String(a.date).split(".");
+              if (!dd || !mm || !yyyy) continue;
+              const iso = `${yyyy}-${mm}-${dd}`;
+              dates.push(iso);
+              absencesSet.add(`${g.group_id}|${iso}`);
+            }
+
+            cacheSet(cacheKey, dates, TTL.SCHEDULE);
+          } catch (e) {
+            console.warn(
+              `[homework/groups] absences ${g.group_id} error:`,
+              e
+            );
+          }
+        })
+      );
+    }
+
+    // Проставляем is_no_hw_note + has_homework на уроках
+    for (const g of groupsMap.values()) {
+      for (const l of g.lessons) {
+        if (!l.date) continue;
+        if (absencesSet.has(`${g.group_id}|${l.date}`)) {
+          // Если у урока уже есть реальное ДЗ (homework_id) — не помечаем особым
+          if (!l.homework_id) {
+            l.is_no_hw_note = true;
+          }
+          l.has_homework = true; // считаем это как «ДЗ задано»
+        }
+      }
     }
 
     // ============ Ученики (кэш на час) ============
@@ -190,12 +275,7 @@ export async function GET(req: Request) {
           const sampleLesson = g.lessons.find((l) => l.class_unit_id);
           const classUnitId = sampleLesson?.class_unit_id;
 
-          if (!classUnitId) {
-            console.warn(
-              `[homework/groups] нет class_unit_id для группы ${g.group_id}`
-            );
-            return;
-          }
+          if (!classUnitId) return;
 
           try {
             const studentsUrl = new URL(
@@ -221,12 +301,7 @@ export async function GET(req: Request) {
               headers: { ...headers, "x-mes-subsystem": "journalw" },
             });
 
-            if (!studentsRes.ok) {
-              console.warn(
-                `[homework/groups] student_profiles ${g.group_id}: ${studentsRes.status}`
-              );
-              return;
-            }
+            if (!studentsRes.ok) return;
 
             const sData = await studentsRes.json();
             const sList = Array.isArray(sData)
@@ -253,7 +328,7 @@ export async function GET(req: Request) {
       );
     }
 
-    // ============ Тексты ДЗ (кэш на 5 минут) ============
+    // ============ Тексты ДЗ ============
     const homeworkIdsToLoad: number[] = [];
     for (const g of groupsMap.values()) {
       for (const l of g.lessons) {
@@ -323,7 +398,6 @@ export async function GET(req: Request) {
       }
     }
 
-    // Чистим технические поля
     const groups = [...groupsMap.values()].map((g) => ({
       ...g,
       lessons: g.lessons.map((l) => {
