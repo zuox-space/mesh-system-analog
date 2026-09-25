@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>MESH Helper</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body class="page">
+  <div class="app">
+    <header class="header">
+      <div class="logo">
+        <div class="logo-mark"></div>
+        <div>
+          <div class="logo-title">MESH</div>
+          <div class="logo-sub">Helper · Панель управления</div>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="user-block" id="userBlock" style="display:none;">
+          <div class="user-name" id="userName">—</div>
+          <div class="user-role" id="userRole">TEACHER</div>
+        </div>
+        <button id="refreshTokenBtn" class="btn btn-secondary">Обновить токен</button>
+        <button id="refreshAllBtn" class="btn btn-primary">Обновить данные</button>
+        <div class="status-dot" id="statusDot"></div>
+      </div>
+    </header>
+
+    <section class="criteria-header">
+      <div class="criteria-top">
+        <span class="criteria-title">Критерии надбавки МЭШ</span>
+        <span class="criteria-badge" id="criteriaBadge">—</span>
+      </div>
+      <div class="criteria-period" id="criteriaPeriod">Загрузка…</div>
+      <div class="criteria-summary" id="criteriaSummary"></div>
+    </section>
+
+    <section class="criteria">
+      <div class="criterion" data-key="hw">
+        <div class="criterion-head">
+          <span>Домашние задания</span>
+          <span class="criterion-target">≥95%</span>
+        </div>
+        <div class="criterion-value" id="critHwVal">0.0%</div>
+        <div class="bar"><div class="bar-fill" id="barHw"></div></div>
+        <div class="criterion-meta" id="critHwMeta">0 / 0</div>
+      </div>
+      <div class="criterion" data-key="ktp">
+        <div class="criterion-head">
+          <span>Покрытие уроков КТП</span>
+          <span class="criterion-target">≥95%</span>
+        </div>
+        <div class="criterion-value" id="critKtpVal">0.0%</div>
+        <div class="bar"><div class="bar-fill" id="barKtp"></div></div>
+        <div class="criterion-meta" id="critKtpMeta">0 / 0</div>
+      </div>
+      <div class="criterion" data-key="launch">
+        <div class="criterion-head">
+          <span>Запуск уроков</span>
+          <span class="criterion-target">≥30%</span>
+        </div>
+        <div class="criterion-value" id="critLaunchVal">0.0%</div>
+        <div class="bar"><div class="bar-fill" id="barLaunch"></div></div>
+        <div class="criterion-meta" id="critLaunchMeta">0 / 0</div>
+      </div>
+    </section>
+
+    <section class="token-row">
+      <div class="token-label">Токен МЭШ</div>
+      <div class="token-value" id="critToken">—</div>
+    </section>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="homework">Домашние задания</button>
+      <button class="tab" data-tab="ktp">КТП</button>
+      <button class="tab" data-tab="lessons">Уроки</button>
+    </nav>
+
+    <main class="content">
+      <div class="tab-panel active" id="panel-homework"></div>
+      <div class="tab-panel" id="panel-ktp"></div>
+      <div class="tab-panel" id="panel-lessons"></div>
+    </main>
+  </div>
+
+  <!-- Модальное окно «Задать ДЗ» -->
+  <div id="modal" class="modal" style="display:none;">
+    <div class="modal-bg" id="modalBg"></div>
+    <div class="modal-card">
+      <div class="modal-head">
+        <div>
+          <div class="modal-meta" id="modalMeta"></div>
+          <div class="modal-title" id="modalTitle">—</div>
+        </div>
+        <button class="modal-close" id="modalClose">✕</button>
+      </div>
+      <div class="modal-body">
+        <label class="modal-label">Текст домашнего задания</label>
+        <textarea id="modalText" rows="6" placeholder="Например: §14, упр. 3, 4"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="modalCancel">Отмена</button>
+        <button class="btn btn-primary" id="modalSave">Задать ДЗ</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" style="display:none;"></div>
+
+  <script type="module" src="dashboard.js"></script>
+</body>
+</html>
