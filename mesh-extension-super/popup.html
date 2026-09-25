@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="logo">
+        <div class="logo-mark"></div>
+        <div>
+          <div class="logo-title">MESH</div>
+          <div class="logo-sub">Helper</div>
+        </div>
+      </div>
+      <div class="status-dot" id="statusDot"></div>
+    </header>
+
+    <section class="criteria-header">
+      <div class="criteria-top">
+        <span class="criteria-title">Критерии надбавки</span>
+        <span class="criteria-badge" id="criteriaBadge">—</span>
+      </div>
+      <div class="criteria-period" id="criteriaPeriod">Загрузка…</div>
+      <div class="criteria-summary" id="criteriaSummary"></div>
+    </section>
+
+    <section class="criteria">
+      <div class="criterion" data-key="hw">
+        <div class="criterion-head">
+          <span>ДЗ</span>
+          <span class="criterion-target">≥95%</span>
+        </div>
+        <div class="criterion-value" id="critHwVal">0.0%</div>
+        <div class="bar"><div class="bar-fill" id="barHw"></div></div>
+        <div class="criterion-meta" id="critHwMeta">0 / 0</div>
+      </div>
+
+      <div class="criterion" data-key="ktp">
+        <div class="criterion-head">
+          <span>КТП</span>
+          <span class="criterion-target">≥95%</span>
+        </div>
+        <div class="criterion-value" id="critKtpVal">0.0%</div>
+        <div class="bar"><div class="bar-fill" id="barKtp"></div></div>
+        <div class="criterion-meta" id="critKtpMeta">0 / 0</div>
+      </div>
+
+      <div class="criterion" data-key="launch">
+        <div class="criterion-head">
+          <span>Запуск</span>
+          <span class="criterion-target">≥30%</span>
+        </div>
+        <div class="criterion-value" id="critLaunchVal">0.0%</div>
+        <div class="bar"><div class="bar-fill" id="barLaunch"></div></div>
+        <div class="criterion-meta" id="critLaunchMeta">0 / 0</div>
+      </div>
+    </section>
+
+    <section class="token-row">
+      <div class="token-label">Токен</div>
+      <div class="token-value" id="critToken">—</div>
+    </section>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="homework">ДЗ</button>
+      <button class="tab" data-tab="ktp">КТП</button>
+      <button class="tab" data-tab="lessons">Уроки</button>
+    </nav>
+
+    <main class="content">
+      <div class="tab-panel active" id="panel-homework"></div>
+      <div class="tab-panel" id="panel-ktp"></div>
+      <div class="tab-panel" id="panel-lessons"></div>
+    </main>
+
+    <footer class="footer">
+      <button id="refreshTokenBtn" class="btn btn-secondary">Обновить токен</button>
+      <button id="refreshAllBtn" class="btn btn-secondary">Обновить данные</button>
+    </footer>
+  </div>
+
+  <div id="toast" class="toast" style="display:none;"></div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

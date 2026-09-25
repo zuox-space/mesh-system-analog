@@ -13,24 +13,16 @@ export const DEFAULTS = {
   criteria: { token: { valid: false, minutesLeft: 0 } },
   settings: {
     autoLaunch: true,
-    autoKtpUpdate: false,
     warnMinutes: 120,
     lateWindowMinutes: 60,
     catchUpMinutes: 60
   },
-  // Метаданные операций
-  lastKtpUpdateAt: null,        // ISO-время последнего успешного обновления КТП
-  lastLessonLaunchAt: null,     // ISO-время последнего автозапуска урока
-  lastLessonLaunchStatus: null, // "ok" | "error"
-  lastLessonLaunchInfo: null,   // { lessonName, time, url, error? }
   lastCheck: null
 };
 
 export async function getState(keys = null) {
   const all = await chrome.storage.local.get(null);
   const merged = { ...DEFAULTS, ...all };
-  // settings — вложенный объект, объединяем отдельно
-  merged.settings = { ...DEFAULTS.settings, ...(all.settings || {}) };
   if (!keys) return merged;
   const out = {};
   for (const k of keys) out[k] = merged[k];
@@ -45,13 +37,6 @@ export async function updateCriteria(partial) {
   const { criteria } = await getState(["criteria"]);
   const base = criteria && typeof criteria === "object" ? criteria : {};
   await setState({ criteria: { ...base, ...partial } });
-}
-
-export async function updateSettings(partial) {
-  const { settings } = await getState(["settings"]);
-  const next = { ...DEFAULTS.settings, ...(settings || {}), ...partial };
-  await setState({ settings: next });
-  return next;
 }
 
 export async function clearAll() {

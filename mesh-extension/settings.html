@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Настройки · Помощник в МЭШ</title>
+    <link rel="stylesheet" href="settings.css">
+</head>
+
+<body>
+    <div class="app">
+        <header class="header">
+            <div class="logo">
+                <img src="icons/icon48.png" alt="" class="logo-icon" />
+                <div>
+                    <div class="logo-title">Настройки</div>
+                    <div class="logo-sub">Помощник в МЭШ</div>
+                </div>
+            </div>
+            <button id="closeBtn" class="icon-btn" title="Закрыть">✕</button>
+        </header>
+
+        <main class="content">
+
+            <section class="card">
+                <div class="card-title">Автоматизация</div>
+
+                <label class="switch-row">
+                    <div class="switch-label">
+                        <div class="switch-name">Автоматический запуск уроков</div>
+                        <div class="switch-desc">
+                            Уроки будут открываться автоматически в момент старта.
+                            Если выключено — нужно запускать вручную.
+                        </div>
+                    </div>
+                    <input type="checkbox" id="autoLaunch" class="switch">
+                </label>
+
+                <label class="switch-row">
+                    <div class="switch-label">
+                        <div class="switch-name">Автоматическое обновление КТП</div>
+                        <div class="switch-desc">
+                            Раз в сутки расширение будет обновлять все КТП.
+                            Последнее обновление: <b id="lastKtp">—</b>
+                        </div>
+                    </div>
+                    <input type="checkbox" id="autoKtpUpdate" class="switch">
+                </label>
+            </section>
+
+            <section class="card">
+                <div class="card-title">Запуск уроков</div>
+
+                <div class="field">
+                    <label class="field-label" for="catchUpMinutes">Догонять пропущенные уроки (минут)</label>
+                    <input type="number" id="catchUpMinutes" class="input" min="0" max="180" step="5">
+                    <div class="field-hint">
+                        Если урок начался недавно, а расширение проспало — оно запустит его в пределах этого окна.
+                        По умолчанию 60 минут.
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label class="field-label" for="warnMinutes">Предупреждать об истечении токена за (минут)</label>
+                    <input type="number" id="warnMinutes" class="input" min="10" max="600" step="10">
+                    <div class="field-hint">
+                        Уведомление появится, если токену осталось меньше указанного времени.
+                    </div>
+                </div>
+            </section>
+
+            <section class="card">
+                <div class="card-title">Сброс</div>
+                <button id="resetBtn" class="btn btn-danger">Сбросить все настройки</button>
+            </section>
+
+        </main>
+
+        <footer class="footer">
+            <div id="saveStatus" class="save-status"></div>
+        </footer>
+    </div>
+
+    <script type="module" src="settings.js"></script>
+</body>
+
+</html>

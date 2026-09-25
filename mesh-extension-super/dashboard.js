@@ -60,37 +60,9 @@ let currentLesson = null;
 
 function openModal(lesson) {
   currentLesson = lesson;
-
-  const hasHw = !!lesson.has_homework;
-  const hasId = !!lesson.homeworkId;
-  const hasText = !!(lesson.homeworkText && lesson.homeworkText.trim());
-  const baseTitle = lesson.title || lesson.lessonName || "Урок";
-
   modalMeta.textContent = `${lesson.date} · ${lesson.time || ""} · ${lesson.groupName || ""}`;
-
-  if (hasHw && hasId && hasText) {
-    // ДЗ есть + есть текст → режим «Изменить»
-    modalTitle.textContent = "Изменить ДЗ · " + baseTitle;
-    modalText.value = lesson.homeworkText;
-    modalText.placeholder = "";
-  } else if (hasHw && hasId && !hasText) {
-    // ДЗ есть, но текста нет → режим «Изменить», поле пустое
-    modalTitle.textContent = "Изменить ДЗ · " + baseTitle;
-    modalText.value = "";
-    modalText.placeholder = "Введите текст ДЗ (сейчас в МЭШ без текста)";
-  } else {
-    // ДЗ ещё не задано → режим «Задать»
-    modalTitle.textContent = "Задать ДЗ · " + baseTitle;
-    modalText.value = "Без домашнего задания";
-    modalText.placeholder = "";
-  }
-
-  // Кнопка меняет текст
-  const saveBtn = document.getElementById("modalSave");
-  if (saveBtn) {
-    saveBtn.textContent = (hasHw && hasId) ? "Сохранить" : "Задать ДЗ";
-  }
-
+  modalTitle.textContent = lesson.title || lesson.lessonName || "Урок";
+  modalText.value = "Без домашнего задания";
   modal.style.display = "flex";
   setTimeout(() => modalText.focus(), 50);
 }
@@ -158,30 +130,11 @@ async function renderTab(name) {
   if (name === "ktp") {
     renderKtp(panels.ktp, st, {
       onUpdateAll: async () => {
+        if (!confirm("Обновить все КТП? Это может занять 10–30 секунд.")) return;
         toast("Обновляю все КТП…");
         const r = await sendMsg({ type: "updateAllKtp" });
-        if (r?.ok) {
-          let text = `Обновлено ${r.ok_count} из ${r.total}`;
-          if (r.noPlanCount > 0) text += `. Без плана: ${r.noPlanCount}`;
-          toast(text, r.failed?.length || r.noPlanCount ? "err" : "ok");
-        } else {
-          toast("Ошибка: " + (r?.error || ""), "err");
-        }
-        await renderAll();
-      },
-      onUpdateOne: async (planId) => {
-        if (!planId) return;
-        toast("Обновляю КТП…");
-        const r = await sendMsg({ type: "updateOneKtp", planId });
-        if (r?.ok) {
-          toast("КТП обновлено, обновляю данные…", "ok");
-          await sendMsg({ type: "refreshSchedule" });
-          await sendMsg({ type: "refreshKtp" });
-          await sendMsg({ type: "recalcCriteria" });
-          toast("Данные обновлены", "ok");
-        } else {
-          toast("Ошибка: " + (r?.error || ""), "err");
-        }
+        if (r?.ok) toast(`Обновлено ${r.ok_count} из ${r.total}`, r.failed?.length ? "err" : "ok");
+        else toast("Ошибка: " + (r?.error || ""), "err");
         await renderAll();
       }
     });
@@ -291,11 +244,13 @@ document.getElementById("refreshAllBtn").addEventListener("click", async () => {
   const btn = document.getElementById("refreshAllBtn");
   btn.disabled = true; btn.textContent = "Обновляю...";
 
+  // 1. Сначала попробуем обновить токен (тихо)
   const tokenRes = await sendMsg({ type: "refreshToken" });
   if (!tokenRes?.success) {
     console.warn("[dashboard] refreshToken failed:", tokenRes?.error);
   }
 
+  // 2. Обновим данные
   await renderAll();
 
   btn.disabled = false; btn.textContent = "Обновить данные";
@@ -309,12 +264,12 @@ document.getElementById("refreshAllBtn").addEventListener("click", async () => {
 })();
 
 // ============================================================
-// Автообновление UI
+// Автообновление UI при изменении storage
 // ============================================================
 let reRenderTimer = null;
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  if (!changes.schedule && !changes.criteria && !changes.meshToken && !changes.ktp) return;
+  if (!changes.schedule && !changes.criteria && !changes.meshToken) return;
 
   clearTimeout(reRenderTimer);
   reRenderTimer = setTimeout(async () => {

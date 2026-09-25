@@ -13,17 +13,14 @@ function teacherHeaders(meshToken, teacherId, subsystem = "teacherweb") {
   };
 }
 
-// 1. Сессия
 export async function fetchSession(meshToken) {
   const r = await fetch(`${BASE}/api/ej/acl/v1/sessions`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${meshToken}`,
       "content-type": "application/json",
-      "x-mes-hostid": "9",
-      "x-mes-roleid": "9",
-      "x-mes-subsystem": "teacherweb",
-      aid: "14",
+      "x-mes-hostid": "9", "x-mes-roleid": "9",
+      "x-mes-subsystem": "teacherweb", aid: "14",
       accept: "application/json"
     },
     body: JSON.stringify({ auth_token: meshToken })
@@ -37,7 +34,6 @@ export function findTeacherProfile(session) {
   return session.profiles.find((p) => p.type === "teacher") || session.profiles[0] || null;
 }
 
-// 2. UserInfo
 export async function fetchUserInfo(meshToken) {
   const r = await fetch(`${BASE}/v1/oauth/userinfo`, {
     headers: { authorization: `Bearer ${meshToken}`, accept: "application/json" }
@@ -46,7 +42,6 @@ export async function fetchUserInfo(meshToken) {
   return r.json();
 }
 
-// 3. Academic Year
 export async function fetchAcademicYear(meshToken, teacherId) {
   try {
     const r = await fetch(`${BASE}/api/ej/core/v1/academic_years`, {
@@ -78,20 +73,12 @@ export async function fetchAcademicYear(meshToken, teacherId) {
         };
       }
     }
-  } catch (e) {
-    console.warn("[mesh-api] academic_years failed:", e);
-  }
+  } catch (e) {}
   const now = new Date();
   const sy = now.getMonth() + 1 >= 9 ? now.getFullYear() : now.getFullYear() - 1;
-  return {
-    id: 14,
-    name: `${sy}/${sy + 1}`,
-    start_date: `${sy}-09-01`,
-    end_date: `${sy + 1}-08-31`
-  };
+  return { id: 14, name: `${sy}/${sy + 1}`, start_date: `${sy}-09-01`, end_date: `${sy + 1}-08-31` };
 }
 
-// 4. Schedule items
 export async function fetchScheduleItems(meshToken, teacherId, academicYearId, from, to) {
   const url = new URL(`${BASE}/api/ej/plan/teacher/v1/schedule_items`);
   url.searchParams.set("academic_year_id", String(academicYearId));
@@ -105,16 +92,12 @@ export async function fetchScheduleItems(meshToken, teacherId, academicYearId, f
   url.searchParams.set("page", "1");
   url.searchParams.set("per_page", "2000");
   url.searchParams.set("original", "true");
-
-  const r = await fetch(url.toString(), {
-    headers: teacherHeaders(meshToken, teacherId)
-  });
+  const r = await fetch(url.toString(), { headers: teacherHeaders(meshToken, teacherId) });
   if (!r.ok) throw new Error(`schedule_items ${r.status}`);
   const data = await r.json();
   return Array.isArray(data) ? data : data.items || data.data || [];
 }
 
-// 5. Rooms
 export async function fetchRooms(meshToken, teacherId) {
   const r = await fetch(`${BASE}/api/ej/core/teacher/v1/rooms`, {
     headers: teacherHeaders(meshToken, teacherId)
@@ -127,13 +110,12 @@ export async function fetchRooms(meshToken, teacherId) {
     const id = Number(room.id);
     if (!id) continue;
     const label = (room.number && String(room.number).trim()) ||
-      (room.name && String(room.name).trim()) || "";
+                  (room.name && String(room.name).trim()) || "";
     if (label) map[id] = label;
   }
   return map;
 }
 
-// 6. Students
 export async function fetchStudents(meshToken, teacherId, academicYearId, classUnitId, groupId) {
   const url = new URL(`${BASE}/api/ej/core/teacher/v1/student_profiles`);
   url.searchParams.set("academic_year_id", String(academicYearId));
@@ -145,21 +127,16 @@ export async function fetchStudents(meshToken, teacherId, academicYearId, classU
   url.searchParams.set("with_transferred", "false");
   url.searchParams.set("per_page", "150");
   url.searchParams.set("page", "1");
-
-  const r = await fetch(url.toString(), {
-    headers: teacherHeaders(meshToken, teacherId, "journalw")
-  });
+  const r = await fetch(url.toString(), { headers: teacherHeaders(meshToken, teacherId, "journalw") });
   if (!r.ok) return [];
   const data = await r.json();
   const list = Array.isArray(data) ? data : data.items || data.data || [];
   return list.map((s) => Number(s.id || s.student_id)).filter(Boolean);
 }
 
-// 7. Homework presence
 export async function fetchHomeworkPresence(meshToken, teacherId, lessonIds) {
   const result = new Map();
   if (!lessonIds.length) return result;
-
   const CHUNK = 100;
   for (let i = 0; i < lessonIds.length; i += CHUNK) {
     const chunk = lessonIds.slice(i, i + CHUNK);
@@ -167,97 +144,23 @@ export async function fetchHomeworkPresence(meshToken, teacherId, lessonIds) {
     try {
       const url = new URL(`${BASE}/api/ej/core/teacher/v1/homework_presence`);
       url.searchParams.set("lesson_schedule_item_ids", idsParam);
-      const r = await fetch(url.toString(), {
-        headers: teacherHeaders(meshToken, teacherId)
-      });
+      const r = await fetch(url.toString(), { headers: teacherHeaders(meshToken, teacherId) });
       if (!r.ok) continue;
       const data = await r.json();
       const list = Array.isArray(data) ? data : data.items || data.data || [];
       for (const p of list) result.set(p.lesson_schedule_item_id, p);
-    } catch (e) {
-      console.warn("[mesh-api] homework_presence chunk error:", e);
-    }
+    } catch (e) {}
   }
   return result;
 }
 
-// 8. Homework absences
 function isoToDDMMYYYY(iso) {
   const [y, m, d] = iso.split("-");
   return `${d}.${m}.${y}`;
 }
 
-export async function fetchHomeworkAbsences(meshToken, teacherId, groupId, from, to) {
-  try {
-    const url = new URL(`${BASE}/api/ej/core/teacher/v1/homework_absences`);
-    url.searchParams.set("begin_date", isoToDDMMYYYY(from));
-    url.searchParams.set("end_date", isoToDDMMYYYY(to));
-    url.searchParams.set("group_id", String(groupId));
-    url.searchParams.set("page", "1");
-    url.searchParams.set("per_page", "100");
-
-    const r = await fetch(url.toString(), {
-      headers: teacherHeaders(meshToken, teacherId)
-    });
-    if (!r.ok) return [];
-    const data = await r.json();
-    const list = Array.isArray(data) ? data : data.items || data.data || [];
-    const dates = [];
-    for (const a of list) {
-      if (a.deleted_at) continue;
-      if (!a.date) continue;
-      const [dd, mm, yyyy] = String(a.date).split(".");
-      if (!dd || !mm || !yyyy) continue;
-      dates.push(`${yyyy}-${mm}-${dd}`);
-    }
-    return dates;
-  } catch {
-    return [];
-  }
-}
-
-// 9. Homework texts
-export async function fetchHomeworkTexts(meshToken, teacherId, ids) {
-  const map = new Map();
-  if (!ids.length) return map;
-
-  const CHUNK = 30;
-  for (let i = 0; i < ids.length; i += CHUNK) {
-    const chunk = ids.slice(i, i + CHUNK);
-    const idsParam = chunk.join(",");
-    try {
-      const r = await fetch(
-        `${BASE}/api/ej/core/teacher/v1/homeworks?ids=${idsParam}&with_entries=true`,
-        { headers: teacherHeaders(meshToken, teacherId) }
-      );
-      if (!r.ok) continue;
-      const data = await r.json();
-      const list = Array.isArray(data) ? data : [data];
-      for (const hw of list) {
-        const hid = Number(hw?.id);
-        if (!hid) continue;
-        const entries = hw.homework_entries || [];
-        const desc = entries
-          .map((e) => e.description || "")
-          .filter(Boolean)
-          .join("\n\n")
-          .trim();
-        if (desc) map.set(hid, desc);
-      }
-    } catch (e) {
-      console.warn("[mesh-api] homeworks chunk error:", e);
-    }
-  }
-  return map;
-}
-
-// 10. Create homework
 export async function createHomework(meshToken, teacherId, params) {
-  const {
-    group_id, subject_id, date_assigned_on, date_prepared_for,
-    student_ids, description
-  } = params;
-
+  const { group_id, subject_id, date_assigned_on, date_prepared_for, student_ids, description } = params;
   const payload = {
     group_id: Number(group_id),
     teacher_id: teacherId,
@@ -273,13 +176,9 @@ export async function createHomework(meshToken, teacherId, params) {
       scripts: null
     }]
   };
-
   const r = await fetch(`${BASE}/api/ej/core/teacher/v1/homeworks`, {
     method: "POST",
-    headers: {
-      ...teacherHeaders(meshToken, teacherId),
-      "content-type": "application/json"
-    },
+    headers: { ...teacherHeaders(meshToken, teacherId), "content-type": "application/json" },
     body: JSON.stringify(payload)
   });
   if (!r.ok) {
@@ -289,119 +188,44 @@ export async function createHomework(meshToken, teacherId, params) {
   return r.json();
 }
 
-// 11. Update existing homework (PUT)
-export async function updateHomework(meshToken, teacherId, homeworkId, description) {
-  if (!homeworkId) throw new Error("updateHomework: нет homeworkId");
-
-  const headers = {
-    ...teacherHeaders(meshToken, teacherId),
-    "content-type": "application/json"
-  };
-
-  // 1. Читаем текущее ДЗ
-  const getRes = await fetch(
-    `${BASE}/api/ej/core/teacher/v1/homeworks/${homeworkId}`,
-    { headers }
-  );
-  if (!getRes.ok) {
-    const t = await getRes.text();
-    throw new Error(`read homework ${getRes.status}: ${t.slice(0, 200)}`);
-  }
-
-  const existing = await getRes.json();
-  const entries = Array.isArray(existing.homework_entries) ? existing.homework_entries : [];
-
-  // 2. Меняем описание первой записи
-  if (entries.length > 0) {
-    entries[0].description = String(description);
-  } else {
-    entries.push({
-      description: String(description),
-      duration: 15,
-      student_ids: [],
-      attachment_ids: [],
-      attachments: [],
-      scripts: null
-    });
-  }
-
-  // 3. PUT
-  const putRes = await fetch(
-    `${BASE}/api/ej/core/teacher/v1/homeworks/${homeworkId}`,
-    {
-      method: "PUT",
-      headers,
-      body: JSON.stringify({ ...existing, homework_entries: entries })
-    }
-  );
-  if (!putRes.ok) {
-    const t = await putRes.text();
-    throw new Error(`update homework ${putRes.status}: ${t.slice(0, 200)}`);
-  }
-  return putRes.json();
-}
-
-// 12. KTP
 export async function fetchCalendarPlans(meshToken, teacherId, academicYearId, groupIds) {
   const url = new URL(`${BASE}/api/ej/plan/teacher/v1/calendar_plans`);
   url.searchParams.set("academic_year_id", String(academicYearId));
   url.searchParams.set("group_id", groupIds.join(","));
-
-  const r = await fetch(url.toString(), {
-    headers: teacherHeaders(meshToken, teacherId, "ppktpw")
-  });
+  const r = await fetch(url.toString(), { headers: teacherHeaders(meshToken, teacherId, "ppktpw") });
   if (!r.ok) return [];
   const data = await r.json();
   return Array.isArray(data) ? data : data.items || data.data || [];
 }
 
 export async function fetchCalendarPlan(meshToken, teacherId, planId) {
-  const r = await fetch(
-    `${BASE}/api/ej/plan/teacher/v1/calendar_plans/${planId}`,
-    { headers: teacherHeaders(meshToken, teacherId, "ppktpw") }
-  );
+  const r = await fetch(`${BASE}/api/ej/plan/teacher/v1/calendar_plans/${planId}`,
+    { headers: teacherHeaders(meshToken, teacherId, "ppktpw") });
   if (!r.ok) return null;
   return r.json();
 }
 
 export async function ktpFinishAndRecalc(meshToken, teacherId, planId) {
   const h = teacherHeaders(meshToken, teacherId);
-
-  const r1 = await fetch(
-    `${BASE}/api/ej/plan/teacher/v1/calendar_plans/${planId}/finish?ignore_IA=true`,
-    { method: "POST", headers: h }
-  );
-  if (!r1.ok) {
-    const t = await r1.text();
-    throw new Error(`finish ${r1.status}: ${t.slice(0, 200)}`);
-  }
-
-  const r2 = await fetch(
-    `${BASE}/api/ej/plan/teacher/v1/calendar_plans/${planId}/recalc?ignore_IA=true`,
-    { method: "POST", headers: h }
-  );
-  if (!r2.ok) {
-    const t = await r2.text();
-    throw new Error(`recalc ${r2.status}: ${t.slice(0, 200)}`);
-  }
+  const r1 = await fetch(`${BASE}/api/ej/plan/teacher/v1/calendar_plans/${planId}/finish?ignore_IA=true`,
+    { method: "POST", headers: h });
+  if (!r1.ok) throw new Error(`finish ${r1.status}`);
+  const r2 = await fetch(`${BASE}/api/ej/plan/teacher/v1/calendar_plans/${planId}/recalc?ignore_IA=true`,
+    { method: "POST", headers: h });
+  if (!r2.ok) throw new Error(`recalc ${r2.status}`);
   return { ok: true };
 }
 
-// 13. Materials
 export async function resolveMaterialUuids(meshToken, teacherId, uuids) {
   const result = {};
   if (!uuids.length) return result;
-
   const CHUNK = 50;
   for (let i = 0; i < uuids.length; i += CHUNK) {
     const chunk = uuids.slice(i, i + CHUNK);
     try {
       const r = await fetch(`${BASE}/api/materials/v3/materials/bulk/uuids`, {
         method: "POST",
-        headers: {
-          ...teacherHeaders(meshToken, teacherId),
-          "content-type": "application/json"
-        },
+        headers: { ...teacherHeaders(meshToken, teacherId), "content-type": "application/json" },
         body: JSON.stringify(chunk)
       });
       if (!r.ok) continue;
@@ -409,48 +233,36 @@ export async function resolveMaterialUuids(meshToken, teacherId, uuids) {
       const list = Array.isArray(data) ? data : data.items || data.data || [];
       for (const m of list) {
         if (!m.uuid || !m.original_uuid) continue;
-        result[m.uuid] = {
-          original_uuid: String(m.original_uuid),
-          name: String(m.name || "")
-        };
+        result[m.uuid] = { original_uuid: String(m.original_uuid), name: String(m.name || "") };
       }
-    } catch (e) {
-      console.warn("[mesh-api] bulk/uuids error:", e);
-    }
+    } catch (e) {}
   }
   return result;
 }
 
-// 14. Launch
 export function buildLaunchUrl(teacherId, materialUuid, subjectId, groupId) {
   const activityUrl = `https://uchebnik.mos.ru/cms/materials/${materialUuid}/launch?teacher_id=${teacherId}&subject_id=${subjectId}&group_id=${groupId}&mode=management`;
   return `${BASE}/api/launcher/v1/launch?activity_url=${encodeURIComponent(activityUrl)}`;
 }
 
-// 15. Bulk KTP
 export async function updateAllKtp(meshToken, teacherId, academicYearId, groupIds) {
   const plans = await fetchCalendarPlans(meshToken, teacherId, academicYearId, groupIds);
   const planIds = plans.map((p) => Number(p.id)).filter(Boolean);
-
   const CONCURRENCY = 3;
   const results = [];
-
   for (let i = 0; i < planIds.length; i += CONCURRENCY) {
     const chunk = planIds.slice(i, i + CONCURRENCY);
-    const chunkResults = await Promise.all(
-      chunk.map(async (pid) => {
-        const plan = plans.find((p) => Number(p.id) === pid);
-        try {
-          await ktpFinishAndRecalc(meshToken, teacherId, pid);
-          return { plan_id: pid, group_name: plan?.group_name, ok: true };
-        } catch (e) {
-          return { plan_id: pid, group_name: plan?.group_name, ok: false, error: String(e) };
-        }
-      })
-    );
+    const chunkResults = await Promise.all(chunk.map(async (pid) => {
+      const plan = plans.find((p) => Number(p.id) === pid);
+      try {
+        await ktpFinishAndRecalc(meshToken, teacherId, pid);
+        return { plan_id: pid, group_name: plan?.group_name, ok: true };
+      } catch (e) {
+        return { plan_id: pid, group_name: plan?.group_name, ok: false, error: String(e) };
+      }
+    }));
     results.push(...chunkResults);
   }
-
   return {
     total: planIds.length,
     ok_count: results.filter((r) => r.ok).length,
@@ -458,11 +270,9 @@ export async function updateAllKtp(meshToken, teacherId, academicYearId, groupId
   };
 }
 
-// 16. Bulk empty homework
 export async function bulkSetEmptyHomework(meshToken, teacherId, items, onProgress) {
   const DELAY_MS = 400;
   const results = [];
-
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     try {
@@ -481,7 +291,6 @@ export async function bulkSetEmptyHomework(meshToken, teacherId, items, onProgre
     if (onProgress) onProgress(i + 1, items.length);
     await new Promise((r) => setTimeout(r, DELAY_MS));
   }
-
   return {
     total: results.length,
     ok_count: results.filter((r) => r.ok).length,

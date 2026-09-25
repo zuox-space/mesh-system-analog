@@ -1,20 +1,19 @@
 // background.js
-import { getState, setState, updateCriteria, updateSettings } from "./storage.js";
+import { getState, setState, updateCriteria } from "./storage.js";
 import {
   fetchSession, findTeacherProfile, fetchUserInfo,
   fetchAcademicYear, fetchScheduleItems,
   fetchRooms, fetchStudents,
-  fetchHomeworkPresence, fetchHomeworkTexts,
+  fetchHomeworkPresence,
   fetchCalendarPlans, fetchCalendarPlan, ktpFinishAndRecalc,
   resolveMaterialUuids, buildLaunchUrl,
-  updateAllKtp, bulkSetEmptyHomework, createHomework, updateHomework
+  updateAllKtp, bulkSetEmptyHomework, createHomework
 } from "./mesh-api.js";
 import { calcCriteria, getReportPeriod } from "./criteria.js";
 
 const ALARM_CHECK = "meshCheckSchedule";
 const ALARM_QUICK = "meshCheckQuick";
 const ALARM_TOKEN = "meshCheckToken";
-const ALARM_KTP = "meshCheckKtpDaily";
 
 // ============================================================
 // Установка / запуск
@@ -24,7 +23,6 @@ chrome.runtime.onInstalled.addListener(async () => {
   await chrome.alarms.create(ALARM_CHECK, { periodInMinutes: 1, delayInMinutes: 0.5 });
   await chrome.alarms.create(ALARM_QUICK, { periodInMinutes: 1, delayInMinutes: 0.2 });
   await chrome.alarms.create(ALARM_TOKEN, { periodInMinutes: 60, delayInMinutes: 1 });
-  await chrome.alarms.create(ALARM_KTP, { periodInMinutes: 60 * 24, delayInMinutes: 1 });
 });
 
 chrome.runtime.onStartup.addListener(async () => {
@@ -32,10 +30,8 @@ chrome.runtime.onStartup.addListener(async () => {
   await chrome.alarms.create(ALARM_CHECK, { periodInMinutes: 1, delayInMinutes: 0.5 });
   await chrome.alarms.create(ALARM_QUICK, { periodInMinutes: 1, delayInMinutes: 0.2 });
   await chrome.alarms.create(ALARM_TOKEN, { periodInMinutes: 60, delayInMinutes: 1 });
-  await chrome.alarms.create(ALARM_KTP, { periodInMinutes: 60 * 24, delayInMinutes: 1 });
 
   setTimeout(() => tickSchedule().catch(() => { }), 2000);
-  setTimeout(() => autoKtpIfEnabled().catch(() => { }), 5000);
 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
@@ -44,9 +40,6 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
   if (alarm.name === ALARM_TOKEN) {
     await autoRefreshAll();
-  }
-  if (alarm.name === ALARM_KTP) {
-    await autoKtpIfEnabled();
   }
 });
 
@@ -82,7 +75,7 @@ function getTokenExpiry(token) {
 }
 
 // ============================================================
-// Токен
+// Токен — проверка срока
 // ============================================================
 async function checkToken() {
   const { meshToken, meshTokenExpiresAt } = await getState(["meshToken", "meshTokenExpiresAt"]);
@@ -98,7 +91,7 @@ async function checkToken() {
 }
 
 // ============================================================
-// autoRefreshAll
+// autoRefreshAll: токен + данные
 // ============================================================
 async function autoRefreshAll() {
   console.log("[bg] autoRefreshAll: start");
@@ -123,7 +116,6 @@ async function autoRefreshAll() {
     await tickSchedule();
     await reloadHomework();
     await reloadKtp();
-    await enrichKtpPlans();
     await recalcCriteria();
     console.log("[bg] autoRefreshAll: данные обновлены");
   } catch (e) {
@@ -214,9 +206,13 @@ async function grabTokenFromTab() {
   return r || { success: false, error: "Пустой ответ" };
 }
 
+// ============================================================
+// Ожидание полной загрузки вкладки
+// ============================================================
 function waitForTabLoad(tabId, timeoutMs = 15000) {
   return new Promise((resolve) => {
     let done = false;
+
     const finish = () => {
       if (done) return;
       done = true;
@@ -224,17 +220,24 @@ function waitForTabLoad(tabId, timeoutMs = 15000) {
       clearTimeout(timer);
       resolve();
     };
+
     const listener = (id, changeInfo) => {
       if (id === tabId && changeInfo.status === "complete") finish();
     };
+
     chrome.tabs.onUpdated.addListener(listener);
+
     chrome.tabs.get(tabId).then((tab) => {
       if (tab.status === "complete") finish();
     }).catch(finish);
+
     const timer = setTimeout(finish, timeoutMs);
   });
 }
 
+// ============================================================
+// Профиль после токена
+// ============================================================
 async function loadProfileAfterToken(token) {
   try {
     const session = await fetchSession(token);
@@ -368,12 +371,6 @@ async function tickSchedule() {
         scriptUuid = l.scripts_new[0].uuid || null;
       }
 
-      // ID домашнего задания — из homeworks_to_give
-      let homeworkId = null;
-      if (Array.isArray(l.homeworks_to_give) && l.homeworks_to_give.length > 0) {
-        homeworkId = Number(l.homeworks_to_give[0].id) || null;
-      }
-
       schedule.push({
         id: l.id,
         date: dateIso, time: timeStr,
@@ -389,8 +386,6 @@ async function tickSchedule() {
         has_ktp: hasKtp,
         is_launched: isLaunched,
         scriptUuid,
-        homeworkId,
-        homeworkText: "",
         launchUrl: old?.launchUrl || "",
         status: old?.status || "pending",
         startedAt: old?.startedAt || null,
@@ -399,10 +394,6 @@ async function tickSchedule() {
     }
 
     await setState({ schedule, period });
-
-    await reloadKtp();
-    await enrichKtpPlans();
-    await reloadHomework();
     await recalcCriteria();
 
     if (settings?.autoLaunch !== false) {
@@ -461,42 +452,17 @@ async function launchDueLessons(schedule, meshToken) {
       if (!lesson.launchUrl) {
         console.warn(`[bg] no launchUrl for ${lesson.id} (scriptUuid=${lesson.scriptUuid})`);
         lesson.status = "failed";
-        lesson.errorMessage = "Нет привязанного материала (нет ссылки на запуск)";
-
-        await setState({
-          lastLessonLaunchAt: now.toISOString(),
-          lastLessonLaunchStatus: "error",
-          lastLessonLaunchInfo: {
-            lessonId: lesson.id,
-            lessonName: lesson.lessonName || lesson.subjectName || "Урок",
-            time: lesson.time,
-            error: lesson.errorMessage
-          }
-        });
-
+        lesson.errorMessage = "Нет launchUrl";
         changed = true;
         continue;
       }
 
-      const tab = await chrome.tabs.create({ url: lesson.launchUrl, active: false });
-      lesson.launchTabId = tab.id;
+      chrome.tabs.create({ url: lesson.launchUrl, active: false });
 
       lesson.status = "running";
       lesson.is_launched = true;
       lesson.startedAt = now.toISOString();
       if (isLate) lesson.late = true;
-
-      await setState({
-        lastLessonLaunchAt: now.toISOString(),
-        lastLessonLaunchStatus: "ok",
-        lastLessonLaunchInfo: {
-          lessonId: lesson.id,
-          lessonName: lesson.lessonName || lesson.subjectName || "Урок",
-          time: lesson.time,
-          url: lesson.launchUrl,
-          tabId: tab.id
-        }
-      });
 
       changed = true;
       console.log(`[bg] launched${isLate ? " late" : ""}: ${lesson.launchUrl.slice(0, 80)}...`);
@@ -504,18 +470,6 @@ async function launchDueLessons(schedule, meshToken) {
       console.error(`[bg] launch error:`, e);
       lesson.status = "failed";
       lesson.errorMessage = String(e);
-
-      await setState({
-        lastLessonLaunchAt: now.toISOString(),
-        lastLessonLaunchStatus: "error",
-        lastLessonLaunchInfo: {
-          lessonId: lesson.id,
-          lessonName: lesson.lessonName || lesson.subjectName || "Урок",
-          time: lesson.time,
-          error: String(e)
-        }
-      });
-
       changed = true;
     }
   }
@@ -523,45 +477,6 @@ async function launchDueLessons(schedule, meshToken) {
   if (changed) {
     await setState({ schedule });
     await recalcCriteria();
-  }
-}
-
-// ============================================================
-// Авто-КТП
-// ============================================================
-async function autoKtpIfEnabled() {
-  const { settings, meshToken, teacherId, academicYear } = await getState([
-    "settings", "meshToken", "teacherId", "academicYear"
-  ]);
-
-  if (!settings?.autoKtpUpdate) {
-    console.log("[bg] autoKtpIfEnabled: выключено в настройках");
-    return;
-  }
-  if (!meshToken || !teacherId || !academicYear) {
-    console.log("[bg] autoKtpIfEnabled: нет токена/профиля/года");
-    return;
-  }
-
-  const { schedule } = await getState(["schedule"]);
-  const groupIds = [...new Set((schedule || []).map((l) => l.groupId).filter(Boolean))];
-  if (!groupIds.length) {
-    console.log("[bg] autoKtpIfEnabled: нет групп");
-    return;
-  }
-
-  console.log("[bg] autoKtpIfEnabled: запускаю авто-КТП для", groupIds.length, "групп");
-
-  try {
-    await updateAllKtp(meshToken, teacherId, academicYear.id, groupIds);
-    await setState({ lastKtpUpdateAt: new Date().toISOString() });
-    await reloadKtp();
-    await enrichKtpPlans();
-    await recalcCriteria();
-    console.log("[bg] autoKtpIfEnabled: КТП обновлены");
-    await notifySchoolTabs();
-  } catch (e) {
-    console.warn("[bg] autoKtpIfEnabled: ошибка", e);
   }
 }
 
@@ -580,20 +495,15 @@ async function recalcCriteria() {
 // Bulk: обновить все КТП
 // ============================================================
 async function runUpdateAllKtp() {
-  const { meshToken, teacherId, academicYear, schedule, ktp } = await getState([
-    "meshToken", "teacherId", "academicYear", "schedule", "ktp"
+  const { meshToken, teacherId, academicYear, schedule } = await getState([
+    "meshToken", "teacherId", "academicYear", "schedule"
   ]);
   if (!meshToken || !teacherId || !academicYear) return { ok: false, error: "Нет данных" };
 
   const groupIds = [...new Set((schedule || []).map((l) => l.groupId).filter(Boolean))];
   if (!groupIds.length) return { ok: false, error: "Нет групп" };
 
-  const ktpWithPlan = new Set((ktp || []).filter((k) => k.id).map((k) => k.groupId));
-  const groupsWithoutPlan = groupIds.filter((gid) => !ktpWithPlan.has(gid));
-
   const result = await updateAllKtp(meshToken, teacherId, academicYear.id, groupIds);
-
-  await setState({ lastKtpUpdateAt: new Date().toISOString() });
 
   await tickSchedule();
   setTimeout(() => tickSchedule().catch(() => { }), 3000);
@@ -601,22 +511,20 @@ async function runUpdateAllKtp() {
 
   await notifySchoolTabs();
 
-  return {
-    ok: true,
-    ...result,
-    groupsWithoutPlan,
-    noPlanCount: groupsWithoutPlan.length
-  };
+  return { ok: true, ...result };
 }
 
+// ============================================================
+// Обновить один КТП
+// ============================================================
 async function runUpdateOneKtp(planId) {
   const { meshToken, teacherId } = await getState(["meshToken", "teacherId"]);
   if (!meshToken || !teacherId) return { ok: false, error: "Нет данных" };
+
   if (!planId) return { ok: false, error: "Не указан planId" };
 
   try {
     await ktpFinishAndRecalc(meshToken, teacherId, planId);
-    await setState({ lastKtpUpdateAt: new Date().toISOString() });
     return { ok: true };
   } catch (e) {
     return { ok: false, error: String(e) };
@@ -624,7 +532,7 @@ async function runUpdateOneKtp(planId) {
 }
 
 // ============================================================
-// Bulk: без ДЗ
+// Bulk: заполнить всё без ДЗ
 // ============================================================
 async function runBulkSetEmpty() {
   const { meshToken, teacherId, schedule } = await getState(["meshToken", "teacherId", "schedule"]);
@@ -652,7 +560,7 @@ async function runBulkSetEmpty() {
 }
 
 // ============================================================
-// Задать / изменить ДЗ
+// Задать ДЗ на один урок
 // ============================================================
 async function runSetCustomHomework(lessonId, description) {
   const { meshToken, teacherId, schedule } = await getState(["meshToken", "teacherId", "schedule"]);
@@ -663,19 +571,11 @@ async function runSetCustomHomework(lessonId, description) {
   if (!lesson.studentIds?.length) return { ok: false, error: "Нет учеников" };
 
   try {
-    // Если у урока УЖЕ есть homeworkId — обновляем существующее ДЗ
-    if (lesson.homeworkId) {
-      console.log("[bg] runSetCustomHomework: обновление существующего ДЗ id=", lesson.homeworkId);
-      await updateHomework(meshToken, teacherId, lesson.homeworkId, description);
-    } else {
-      // Иначе создаём новое
-      console.log("[bg] runSetCustomHomework: создание нового ДЗ");
-      await createHomework(meshToken, teacherId, {
-        group_id: lesson.groupId, subject_id: lesson.subjectId,
-        date_assigned_on: lesson.date, date_prepared_for: lesson.date,
-        student_ids: lesson.studentIds, description
-      });
-    }
+    await createHomework(meshToken, teacherId, {
+      group_id: lesson.groupId, subject_id: lesson.subjectId,
+      date_assigned_on: lesson.date, date_prepared_for: lesson.date,
+      student_ids: lesson.studentIds, description
+    });
 
     await tickSchedule();
     setTimeout(() => tickSchedule().catch(() => { }), 3000);
@@ -687,139 +587,50 @@ async function runSetCustomHomework(lessonId, description) {
 }
 
 // ============================================================
-// КТП: пересборка из schedule
+// Загрузка КТП
 // ============================================================
 async function reloadKtp() {
-  const { meshToken, teacherId, academicYear, schedule, ktp: oldKtp } = await getState([
-    "meshToken", "teacherId", "academicYear", "schedule", "ktp"
+  const { meshToken, teacherId, academicYear, schedule } = await getState([
+    "meshToken", "teacherId", "academicYear", "schedule"
   ]);
   if (!meshToken || !teacherId || !academicYear) return { ok: false, error: "Нет данных" };
-
-  const byGroup = new Map();
-  for (const l of (schedule || [])) {
-    if (!l.groupId) continue;
-    if (!byGroup.has(l.groupId)) {
-      byGroup.set(l.groupId, {
-        groupId: l.groupId,
-        groupName: l.groupName || `Группа ${l.groupId}`,
-        total: 0,
-        withDate: 0,
-        withoutDate: 0
-      });
-    }
-    const g = byGroup.get(l.groupId);
-    g.total += 1;
-    if (l.has_ktp) g.withDate += 1;
-    else g.withoutDate += 1;
+  const groupIds = [...new Set((schedule || []).map((l) => l.groupId).filter(Boolean))];
+  if (!groupIds.length) { await setState({ ktp: [] }); return { ok: true, count: 0 }; }
+  const plans = await fetchCalendarPlans(meshToken, teacherId, academicYear.id, groupIds);
+  const ktp = [];
+  for (const plan of plans) {
+    const details = await fetchCalendarPlan(meshToken, teacherId, plan.id);
+    const lessons = details?.lessons || [];
+    const withDate = lessons.filter((l) => l.date).length;
+    const total = lessons.length;
+    ktp.push({
+      id: plan.id, groupId: plan.group_id,
+      groupName: plan.group_name || `План #${plan.id}`,
+      total, withDate, withoutDate: total - withDate,
+      hasIssues: total > withDate,
+      done: total > 0 && withDate === total
+    });
   }
-
-  const oldByGroup = new Map((oldKtp || []).map((k) => [k.groupId, k]));
-
-  const ktp = [...byGroup.values()].map((g) => {
-    const old = oldByGroup.get(g.groupId);
-    const planId = old?.id || null;
-    return {
-      id: planId,
-      hasPlan: !!planId,
-      groupId: g.groupId,
-      groupName: g.groupName,
-      total: g.total,
-      withDate: g.withDate,
-      withoutDate: g.withoutDate,
-      hasIssues: g.withoutDate > 0,
-      done: g.total > 0 && g.withoutDate === 0
-    };
-  });
-
   await setState({ ktp });
   return { ok: true, count: ktp.length };
 }
 
 // ============================================================
-// КТП: обогащаем planId
-// ============================================================
-async function enrichKtpPlans() {
-  const { meshToken, teacherId, academicYear, schedule, ktp } = await getState([
-    "meshToken", "teacherId", "academicYear", "schedule", "ktp"
-  ]);
-  if (!meshToken || !teacherId || !academicYear) return;
-
-  const groupIds = [...new Set((schedule || []).map((l) => l.groupId).filter(Boolean))];
-  if (!groupIds.length) return;
-
-  try {
-    const plans = await fetchCalendarPlans(meshToken, teacherId, academicYear.id, groupIds);
-    const planByGroup = new Map(plans.map((p) => [Number(p.group_id), Number(p.id)]));
-
-    const updatedKtp = (ktp || []).map((k) => {
-      const planId = planByGroup.get(k.groupId) || null;
-      return {
-        ...k,
-        id: planId,
-        hasPlan: !!planId
-      };
-    });
-
-    await setState({ ktp: updatedKtp });
-  } catch (e) {
-    console.warn("[bg] enrichKtpPlans failed:", e);
-  }
-}
-
-// ============================================================
-// ДЗ: тексты и ID
+// Загрузка ДЗ
 // ============================================================
 async function reloadHomework() {
-  const { meshToken, teacherId, schedule } = await getState(["meshToken", "teacherId", "schedule"]);
-  if (!meshToken || !teacherId) return { ok: false, error: "Нет данных" };
-
-  const safeSchedule = Array.isArray(schedule) ? schedule : [];
-
-  // Собираем ID всех ДЗ из расписания
-  const ids = safeSchedule
-    .map((l) => Number(l.homeworkId))
-    .filter((id) => Number.isFinite(id) && id > 0);
-
-  let textsMap = new Map();
-  if (ids.length) {
-    try {
-      textsMap = await fetchHomeworkTexts(meshToken, teacherId, ids);
-      console.log("[bg] reloadHomework: получено текстов ДЗ:", textsMap.size);
-    } catch (e) {
-      console.warn("[bg] reloadHomework: fetchHomeworkTexts failed:", e);
-    }
-  }
-
-  // Приклеиваем тексты к урокам
-  const updatedSchedule = safeSchedule.map((l) => ({
-    ...l,
-    homeworkText: l.homeworkId ? (textsMap.get(Number(l.homeworkId)) || "") : ""
+  const { schedule } = await getState(["schedule"]);
+  const homework = (schedule || []).map((l) => ({
+    id: l.id, lessonId: l.id, date: l.date, time: l.time,
+    title: l.lessonName || l.subjectName, subject: l.subjectName,
+    groupName: l.groupName, has_homework: l.has_homework, done: l.has_homework
   }));
-
-  // Сохраняем обновлённый schedule + homework (для dashboard)
-  await setState({ schedule: updatedSchedule });
-
-  const homework = updatedSchedule.map((l) => ({
-    id: l.id,
-    lessonId: l.id,
-    date: l.date,
-    time: l.time,
-    title: l.lessonName || l.subjectName,
-    subject: l.subjectName,
-    groupName: l.groupName,
-    has_homework: l.has_homework,
-    done: l.has_homework,
-    homeworkId: l.homeworkId || null,
-    homeworkText: l.homeworkText || ""
-  }));
-
   await setState({ homework });
-
-  return { ok: true, count: homework.length, texts: textsMap.size };
+  return { ok: true, count: homework.length };
 }
 
 // ============================================================
-// Оповещение вкладок
+// Оповестить вкладки МЭШ
 // ============================================================
 async function notifySchoolTabs() {
   try {
@@ -867,18 +678,24 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   };
 
+  // ===== Токен =====
   if (msg?.type === "refreshToken") return wrap(grabTokenFromTab);
+
+  // ===== Данные =====
   if (msg?.type === "refreshSchedule") return wrap(async () => { await tickSchedule(); return { ok: true }; });
   if (msg?.type === "refreshHomework") return wrap(reloadHomework);
-  if (msg?.type === "refreshKtp") return wrap(async () => { await reloadKtp(); await enrichKtpPlans(); return { ok: true }; });
+  if (msg?.type === "refreshKtp") return wrap(reloadKtp);
   if (msg?.type === "recalcCriteria") return wrap(async () => { await recalcCriteria(); return { ok: true }; });
 
+  // ===== КТП =====
   if (msg?.type === "updateAllKtp") return wrap(runUpdateAllKtp);
   if (msg?.type === "updateOneKtp") return wrap(() => runUpdateOneKtp(msg.planId));
 
+  // ===== ДЗ =====
   if (msg?.type === "bulkSetEmpty") return wrap(runBulkSetEmpty);
   if (msg?.type === "setCustomHomework") return wrap(() => runSetCustomHomework(msg.lessonId, msg.description));
 
+  // ===== Запуск урока =====
   if (msg?.type === "launchNow") {
     return wrap(async () => {
       const { meshToken, teacherId } = await getState(["meshToken", "teacherId"]);
@@ -891,135 +708,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         }
       }
       if (lesson.launchUrl) {
-        const tab = await chrome.tabs.create({ url: lesson.launchUrl, active: true });
-        await setState({
-          lastLessonLaunchAt: new Date().toISOString(),
-          lastLessonLaunchStatus: "ok",
-          lastLessonLaunchInfo: {
-            lessonId: lesson.id,
-            lessonName: lesson.lessonName || lesson.subjectName || "Урок",
-            time: lesson.time,
-            url: lesson.launchUrl,
-            tabId: tab.id
-          }
-        });
+        chrome.tabs.create({ url: lesson.launchUrl, active: true });
         return { ok: true };
       }
-      await setState({
-        lastLessonLaunchAt: new Date().toISOString(),
-        lastLessonLaunchStatus: "error",
-        lastLessonLaunchInfo: {
-          lessonId: lesson.id,
-          lessonName: lesson.lessonName || lesson.subjectName || "Урок",
-          time: lesson.time,
-          error: "Нет ссылки на запуск (нет привязанного материала)"
-        }
-      });
       return { ok: false, error: "Нет launchUrl" };
     });
   }
 
+  // ===== Открыть dashboard =====
   if (msg?.type === "openDashboard") {
-    return wrap(async () => { await openDashboardWindow(); return { ok: true }; });
-  }
-
-  if (msg?.type === "getSettings") {
     return wrap(async () => {
-      const { settings } = await getState(["settings"]);
-      return { ok: true, settings };
-    });
-  }
-  if (msg?.type === "updateSettings") {
-    return wrap(async () => {
-      const next = await updateSettings(msg.settings || {});
-      return { ok: true, settings: next };
-    });
-  }
-
-  if (msg?.type === "getCurrentLessonStatus") {
-    return wrap(async () => {
-      const { schedule, settings, lastLessonLaunchAt, lastLessonLaunchStatus, lastLessonLaunchInfo } =
-        await getState(["schedule", "settings", "lastLessonLaunchAt", "lastLessonLaunchStatus", "lastLessonLaunchInfo"]);
-
-      const now = new Date();
-      const today = new Date().toISOString().slice(0, 10);
-
-      const allToday = (schedule || []).filter((l) => l.date === today);
-      const current = allToday
-        .map((l) => {
-          const start = new Date(l.startAt);
-          const diffStart = (now - start) / 60000;
-          const diffEnd = diffStart - 45;
-          return { ...l, diffStart, diffEnd };
-        })
-        .find((l) => l.diffStart >= -1 && l.diffEnd <= 5);
-
-      const upcoming = allToday
-        .filter((l) => l.status === "pending" && (new Date(l.startAt) - now) / 60000 > -1)
-        .sort((a, b) => new Date(a.startAt) - new Date(b.startAt))[0];
-
-      return {
-        ok: true,
-        current: current || null,
-        upcoming: upcoming || null,
-        lastLaunch: lastLessonLaunchAt ? {
-          at: lastLessonLaunchAt,
-          status: lastLessonLaunchStatus,
-          info: lastLessonLaunchInfo
-        } : null,
-        autoLaunch: settings?.autoLaunch !== false
-      };
-    });
-  }
-
-  if (msg?.type === "checkCurrentLessonTab") {
-    return wrap(async () => {
-      const { schedule, lastLessonLaunchInfo } = await getState(["schedule", "lastLessonLaunchInfo"]);
-
-      const now = new Date();
-      const today = new Date().toISOString().slice(0, 10);
-      const allToday = (schedule || []).filter((l) => l.date === today);
-
-      const current = allToday
-        .map((l) => {
-          const start = new Date(l.startAt);
-          const diffStart = (now - start) / 60000;
-          const diffEnd = diffStart - 45;
-          return { ...l, diffStart, diffEnd };
-        })
-        .find((l) => l.diffStart >= -1 && l.diffEnd <= 5);
-
-      if (!current) {
-        return { ok: true, hasCurrent: false };
-      }
-
-      let found = null;
-      if (lastLessonLaunchInfo?.lessonId === current.id && lastLessonLaunchInfo?.tabId) {
-        try {
-          const tab = await chrome.tabs.get(lastLessonLaunchInfo.tabId);
-          if (tab && tab.url && tab.url.includes("school.mos.ru")) {
-            found = tab;
-          }
-        } catch { /* вкладка закрыта */ }
-      }
-
-      if (!found) {
-        const tabs = await chrome.tabs.query({ url: "https://school.mos.ru/*" });
-        for (const t of tabs) {
-          if (t.url && t.url.includes("/launcher/v1/launch")) {
-            found = t;
-            break;
-          }
-        }
-      }
-
-      return {
-        ok: true,
-        hasCurrent: true,
-        lesson: current,
-        tabOpen: !!found,
-        tabId: found?.id || null
-      };
+      await openDashboardWindow();
+      return { ok: true };
     });
   }
 
@@ -1027,6 +727,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   return false;
 });
 
+// ============================================================
+// Клик по иконке
+// ============================================================
 chrome.action.onClicked.addListener(async () => {
   await openDashboardWindow();
 });

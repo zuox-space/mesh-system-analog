@@ -129,15 +129,12 @@ export function renderHomeworkCalendar(container, state, { onOpenLesson, onBulkE
 
           sq.onclick = () => onOpenLesson({
             id: lesson.id,
-            lessonId: lesson.id,
             date: lesson.date,
             time: lesson.time,
             groupName: lesson.groupName,
             title: lesson.lessonName || lesson.subjectName,
             lessonName: lesson.lessonName,
-            has_homework: lesson.has_homework,
-            homeworkId: lesson.homeworkId || null,
-            homeworkText: lesson.homeworkText || ""
+            has_homework: lesson.has_homework
           });
 
           squares.appendChild(sq);

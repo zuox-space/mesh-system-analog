@@ -1,43 +1,20 @@
-// tabs/homework.js — календарь ДЗ из квадратиков (как в Next.js)
+// tabs/lessons.js — календарь уроков (как LaunchView.tsx)
 
-const LESSON_DURATION_MIN = 45;   // длительность урока
-const WINDOW_THRESHOLD_MIN = 20;  // разрыв между уроками ≥ 20 мин → окно
-
-export function renderHomeworkCalendar(container, state, { onOpenLesson, onBulkEmpty }) {
+export function renderLessonsCalendar(container, state, onLaunchNow) {
   const schedule = state.schedule || [];
-  const period = state.period;
   const today = new Date().toISOString().slice(0, 10);
 
   container.innerHTML = "";
 
-  // ===== Bulk-row =====
-  const bulk = document.createElement("div");
-  bulk.className = "bulk-row";
-
-  const bulkBtn = document.createElement("button");
-  bulkBtn.className = "btn btn-primary";
-  bulkBtn.textContent = "Заполнить все без ДЗ";
-  bulkBtn.onclick = onBulkEmpty;
-  bulk.appendChild(bulkBtn);
-
-  const futureMissing = schedule.filter(
-    (l) => l.date >= today && !l.has_homework
-  ).length;
-
-  const hint = document.createElement("div");
-  hint.className = "hint";
-  hint.innerHTML = `без ДЗ: <b>${futureMissing}</b> · период: <b>${period ? fmtDate(period.from) + " — " + fmtDate(period.to) : "—"}</b>`;
-  bulk.appendChild(hint);
-  container.appendChild(bulk);
-
-  // ===== Легенда =====
+  // Легенда
   const legend = document.createElement("div");
   legend.className = "legend";
   legend.innerHTML = `
-    <div class="legend-item"><div class="legend-box green"></div> ДЗ задано</div>
-    <div class="legend-item"><div class="legend-box red"></div> пропущено</div>
-    <div class="legend-item"><div class="legend-box yellow"></div> не задано</div>
-    <div class="legend-item"><div class="legend-box window"></div> окно учителя</div>
+    <div class="legend-item"><div class="legend-box green"></div> запущен</div>
+    <div class="legend-item"><div class="legend-box blue"></div> идёт сейчас</div>
+    <div class="legend-item"><div class="legend-box red"></div> не запущен / ошибка</div>
+    <div class="legend-item"><div class="legend-box yellow"></div> ожидает</div>
+    <div class="legend-item"><div class="legend-box gray"></div> нет ссылки на запуск</div>
   `;
   container.appendChild(legend);
 
@@ -49,7 +26,6 @@ export function renderHomeworkCalendar(container, state, { onOpenLesson, onBulkE
     return;
   }
 
-  // ===== Группируем по периодам 16→15 =====
   const periods = groupByReportPeriods(schedule);
 
   for (const p of periods) {
@@ -57,27 +33,29 @@ export function renderHomeworkCalendar(container, state, { onOpenLesson, onBulkE
     block.className = "period-block" + (p.to < today ? " past" : "");
     const isCurrent = p.from <= today && p.to >= today;
 
+    const total = p.lessons.length;
+    const running = p.lessons.filter((l) => l.status === "running").length;
+    const finished = p.lessons.filter((l) => l.status === "finished" || l.is_launched).length;
+    const failed = p.lessons.filter((l) => l.status === "failed").length;
+    const noUrl = p.lessons.filter((l) => !canLaunch(l)).length;
+
     const head = document.createElement("div");
     head.className = "period-head";
-
-    const total = p.lessons.length;
-    const withHw = p.lessons.filter((l) => l.has_homework).length;
-    const futureWithout = p.lessons.filter((l) => l.date >= today && !l.has_homework).length;
-
     head.innerHTML = `
       <div style="display:flex; align-items:baseline; gap:10px;">
         <span class="period-title ${isCurrent ? "current" : ""}">${fmtDate(p.from)} — ${fmtDate(p.to)}</span>
         ${isCurrent ? '<span class="period-tag">текущий</span>' : ""}
       </div>
       <div class="period-stats">
-        <span>уроков: <b>${total}</b></span>
-        <span class="ok">с ДЗ: <b>${withHw}</b></span>
-        ${futureWithout > 0 ? `<span class="warn">без ДЗ (будущие): <b>${futureWithout}</b></span>` : ""}
+        <span class="ok">✓ <b>${finished}</b></span>
+        ${running > 0 ? `<span style="color:#4A9EFF">⚙ <b>${running}</b></span>` : ""}
+        ${failed > 0 ? `<span style="color:#F87171">✕ <b>${failed}</b></span>` : ""}
+        ${noUrl > 0 ? `<span style="color:#64748B">— <b>${noUrl}</b></span>` : ""}
+        <span>всего: <b>${total}</b></span>
       </div>
     `;
     block.appendChild(head);
 
-    // ===== Группируем по неделям =====
     const weeks = groupByWeeks(p.lessons);
     const weeksRow = document.createElement("div");
     weeksRow.className = "weeks-row";
@@ -108,53 +86,38 @@ export function renderHomeworkCalendar(container, state, { onOpenLesson, onBulkE
         const squares = document.createElement("div");
         squares.className = "squares";
 
-        // ===== Сортируем уроки дня по времени =====
-        const sorted = [...day.lessons].sort((a, b) =>
-          (a.time || "").localeCompare(b.time || "")
-        );
-
-        for (let i = 0; i < sorted.length; i++) {
-          const lesson = sorted[i];
-
-          // --- квадратик урока ---
+        for (const lesson of day.lessons) {
           const sq = document.createElement("div");
           sq.className = "square";
-          const isPast = lesson.date < today;
 
-          if (lesson.has_homework) sq.classList.add("has");
-          else if (isPast) sq.classList.add("missing-past");
-          else sq.classList.add("missing-future");
+          const canLaunchLesson = canLaunch(lesson);
 
-          sq.title = `${lesson.time || ""} · ${lesson.groupName || ""} · ${lesson.lessonName || lesson.subjectName || ""}\n${lesson.has_homework ? "ДЗ задано" : "ДЗ не задано"}`;
+          // ===== Приоритеты цветов =====
+          if (!canLaunchLesson) {
+            // нет ссылки — всегда серый, независимо от статуса
+            sq.classList.add("no-url");
+          } else if (lesson.status === "finished" || lesson.is_launched) {
+            sq.classList.add("has");
+          } else if (lesson.status === "running") {
+            sq.classList.add("running");
+          } else if (lesson.status === "failed") {
+            sq.classList.add("failed");
+          } else if (lesson.date < today) {
+            sq.classList.add("missing-past");
+          } else {
+            sq.classList.add("missing-future");
+          }
 
-          sq.onclick = () => onOpenLesson({
-            id: lesson.id,
-            lessonId: lesson.id,
-            date: lesson.date,
-            time: lesson.time,
-            groupName: lesson.groupName,
-            title: lesson.lessonName || lesson.subjectName,
-            lessonName: lesson.lessonName,
-            has_homework: lesson.has_homework,
-            homeworkId: lesson.homeworkId || null,
-            homeworkText: lesson.homeworkText || ""
-          });
+          sq.title = buildTooltip(lesson, canLaunchLesson);
+
+          if (canLaunchLesson) {
+            sq.onclick = () => onLaunchNow(lesson.id);
+          } else {
+            sq.style.cursor = "not-allowed";
+          }
 
           squares.appendChild(sq);
-
-          // --- проверяем разрыв до следующего урока ---
-          const next = sorted[i + 1];
-          if (!next) continue;
-
-          const gap = gapMinutes(lesson.time, next.time);
-          if (gap >= WINDOW_THRESHOLD_MIN) {
-            const win = document.createElement("div");
-            win.className = "square window";
-            win.title = `Окно учителя · ${gap} мин (${lesson.time}–${next.time})`;
-            squares.appendChild(win);
-          }
         }
-
         row.appendChild(squares);
         col.appendChild(row);
       }
@@ -166,22 +129,37 @@ export function renderHomeworkCalendar(container, state, { onOpenLesson, onBulkE
 }
 
 // ============================================================
-// Утилиты
+// Можно ли запустить урок
 // ============================================================
-
-/** Разрыв между уроками в минутах: конец первого + длительность до начала второго */
-function gapMinutes(prevTime, nextTime) {
-  const prevEnd = toMin(prevTime) + LESSON_DURATION_MIN;
-  const nextStart = toMin(nextTime);
-  return nextStart - prevEnd;
+function canLaunch(lesson) {
+  return !!(lesson.launchUrl || lesson.scriptUuid);
 }
 
-function toMin(hhmm) {
-  if (!hhmm) return 0;
-  const [h, m] = hhmm.split(":").map(Number);
-  return (h || 0) * 60 + (m || 0);
+function buildTooltip(lesson, canLaunchLesson) {
+  const title = lesson.lessonName || lesson.subjectName || "Урок";
+  const meta = `${lesson.time || ""} · ${lesson.groupName || ""}`;
+  let status;
+
+  if (!canLaunchLesson) {
+    status = "❌ нет ссылки на запуск (нет прикреплённого материала)";
+  } else if (lesson.status === "finished" || lesson.is_launched) {
+    status = "✓ проведён";
+  } else if (lesson.status === "running") {
+    status = "⚙ идёт сейчас";
+  } else if (lesson.status === "failed") {
+    status = "✕ ошибка: " + (lesson.errorMessage || "");
+  } else if (lesson.date < new Date().toISOString().slice(0, 10)) {
+    status = "⚠ не запущен";
+  } else {
+    status = "⏳ ожидает запуска";
+  }
+
+  return `${title}\n${meta}\n${status}`;
 }
 
+// ============================================================
+// Утилиты группировки
+// ============================================================
 function groupByReportPeriods(lessons) {
   const byDate = new Map();
   for (const l of lessons) {
@@ -191,7 +169,6 @@ function groupByReportPeriods(lessons) {
   for (const arr of byDate.values()) {
     arr.sort((a, b) => (a.time || "").localeCompare(b.time || ""));
   }
-
   const dates = [...byDate.keys()].sort();
   if (!dates.length) return [];
 
@@ -213,12 +190,10 @@ function groupByReportPeriods(lessons) {
 
     const fromIso = isoOf(from);
     const toIso = isoOf(to);
-
     const periodLessons = [];
     for (const date of dates) {
       if (date >= fromIso && date <= toIso) periodLessons.push(...byDate.get(date));
     }
-
     if (periodLessons.length > 0) {
       periods.push({ from: fromIso, to: toIso, lessons: periodLessons });
     }
